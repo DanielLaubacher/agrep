@@ -31,13 +31,21 @@ const (
 // Run executes the search with the given config.
 // Returns exit code: 0 = match found, 1 = no match, 2 = error.
 func Run(cfg Config) int {
+	// Normalize pipelines from legacy fields if needed
+	cfg.NormalizePipelines()
+
 	// Smart case: if enabled and all patterns are lowercase, enable case-insensitive
 	if cfg.SmartCase && !cfg.IgnoreCase {
 		allLower := true
-		for _, p := range cfg.Patterns {
-			for _, r := range p {
-				if unicode.IsUpper(r) {
-					allLower = false
+		for _, pipeline := range cfg.Pipelines {
+			for _, stage := range pipeline {
+				for _, r := range stage.Pattern {
+					if unicode.IsUpper(r) {
+						allLower = false
+						break
+					}
+				}
+				if !allLower {
 					break
 				}
 			}
@@ -59,15 +67,22 @@ func Run(cfg Config) int {
 		maxCols = 0 // -1 from CLI means no limit
 	}
 
-	// Create matcher
-	m, err := matcher.NewMatcher(cfg.Patterns, cfg.Fixed, cfg.PCRE, cfg.IgnoreCase, cfg.Invert, matcher.MatcherOpts{
+	opts := matcher.MatcherOpts{
 		MaxCols:      maxCols,
 		NeedLineNums: cfg.LineNumbers,
-	})
+	}
+
+	// Create matcher from pipelines
+	m, err := matcher.NewMatcherFromPipelines(
+		convertPipelines(cfg.Pipelines), cfg.IgnoreCase, cfg.Invert, opts,
+	)
 	if err != nil {
 		logWarn("invalid pattern: %v", err)
 		return 2
 	}
+
+	// Detect if we need only-matched output mode
+	onlyMatch := hasOnlyMatch(m)
 
 	// Wrap with context if needed (not for watch mode — watch handles context via streaming)
 	if !cfg.WatchMode {
@@ -91,7 +106,7 @@ func Run(cfg Config) int {
 	if cfg.JSONOutput {
 		formatter = output.NewJSONFormatter()
 	} else {
-		formatter = output.NewTextFormatter(cfg.LineNumbers, cfg.CountOnly, cfg.FileNamesOnly, useColor, maxCols)
+		formatter = output.NewTextFormatter(cfg.LineNumbers, cfg.CountOnly, cfg.FileNamesOnly, useColor, maxCols, onlyMatch)
 	}
 
 	reader := input.NewAdaptiveReader(cfg.MmapThreshold)
@@ -263,6 +278,34 @@ func runWatch(paths []string, m matcher.Matcher, formatter output.Formatter, w *
 		return 0
 	}
 	return 1
+}
+
+// convertPipelines converts cli.StageConfig to matcher.StageConfig.
+func convertPipelines(pipelines [][]StageConfig) [][]matcher.StageConfig {
+	result := make([][]matcher.StageConfig, len(pipelines))
+	for i, pipeline := range pipelines {
+		result[i] = make([]matcher.StageConfig, len(pipeline))
+		for j, s := range pipeline {
+			result[i][j] = matcher.StageConfig{
+				Pattern:   s.Pattern,
+				Fixed:     s.Fixed,
+				PCRE:      s.PCRE,
+				OnlyMatch: s.OnlyMatch,
+			}
+		}
+	}
+	return result
+}
+
+// hasOnlyMatch checks if the matcher is a pipeline with -o on the final stage.
+func hasOnlyMatch(m matcher.Matcher) bool {
+	type onlyMatcher interface {
+		OnlyMatch() bool
+	}
+	if om, ok := m.(onlyMatcher); ok {
+		return om.OnlyMatch()
+	}
+	return false
 }
 
 func searchReader(r input.Reader, path string, m matcher.Matcher, mode searchMode) output.Result {

@@ -17,12 +17,16 @@ Short flags can be combined: `-rin` is equivalent to `-r -i -n`.
 
 | Flag | Short | Description |
 |---|---|---|
-| `--regexp PATTERN` | `-e` | Pattern to match (repeatable for multiple patterns) |
-| `--fixed-strings` | `-F` | Treat pattern as a literal string, not a regex |
-| `--perl-regexp` | `-P` | Use PCRE2 regex (supports lookahead, lookbehind, backreferences) |
+| `--regexp PATTERN` | `-e` | Pattern to match (repeatable; multiple = OR, or AND with `-t`) |
+| `--fixed-strings` | `-F` | Treat next `-e` pattern as a literal string, not a regex |
+| `--perl-regexp` | `-P` | Use PCRE2 for next `-e` pattern |
+| `--pipe` | `-t` | Pipe: next `-e` filters lines matched by the previous `-e` |
+| `--only-matching` | `-o` | Print only the matched part of the line for next `-e` |
 | `--ignore-case` | `-i` | Case-insensitive matching |
 | `--smart-case` | `-S` | Case-insensitive if pattern is all lowercase |
 | `--invert-match` | `-v` | Select lines that do NOT match |
+
+**Per-stage flags**: `-F`, `-P`, `-t`, `-o` are per-stage modifiers that apply to the next `-e` and reset after it. They can be combined with short flag syntax: `-Ftoe 'pattern'` = fixed + pipe + only-matching. `-e` must be last in any combined group since it takes a value.
 
 ### Output Control
 
@@ -225,6 +229,54 @@ Count fixed-string matches per file recursively:
 ```sh
 gogrep -rFc "TODO" ./src/
 ```
+
+### Only Matching (-o)
+
+Print only the matched portion of each line (like `grep -o`):
+
+```sh
+gogrep -oe '\d+' app.log
+# 503
+# 200
+# 42
+```
+
+### Regex Pipeline (-t)
+
+Chain patterns with `-t` to filter lines through multiple stages. Each stage must match for the line to appear. The final stage's matches define the output.
+
+```sh
+# SIMD fixed-string prefilter, then extract digits
+gogrep -Fe 'ERROR' -toe '\d+' app.log
+# 503
+# 200
+```
+
+This is equivalent to `grep 'ERROR' app.log | grep -o '\d+'` but runs in a single process, preserving file context (filename, line numbers).
+
+Three-stage narrowing — each stage can use a different engine:
+
+```sh
+gogrep -Fe 'HTTP' -te 'status=\d+' -toe 'status=\d+' access.log
+# status=200
+# status=503
+```
+
+Mix fixed-string SIMD stages with regex or PCRE:
+
+```sh
+gogrep -Fe 'ERROR' -Fte 'prod-' -Fte 'timeout' -toe '\d+' app.log
+```
+
+Multiple OR branches, each with their own pipeline:
+
+```sh
+# Branch 1: ERROR lines → extract digits
+# Branch 2: WARN lines (no pipeline)
+gogrep -Fe 'ERROR' -toe '\d+' -Fe 'WARN' app.log
+```
+
+`-e` without a preceding `-t` starts a new OR branch. `-e` with `-t` continues the current pipeline.
 
 ### Searching Binary Files
 

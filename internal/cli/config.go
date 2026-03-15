@@ -11,17 +11,35 @@ const (
 	ColorNever                   // never use color
 )
 
+// StageConfig holds per-pattern configuration for a pipeline stage.
+type StageConfig struct {
+	Pattern   string
+	Fixed     bool // -F for this stage
+	PCRE      bool // -P for this stage
+	Pipe      bool // -t: receive matched text from previous stage
+	OnlyMatch bool // -o: output only matched portion
+}
+
 // Config holds all configuration for a gogrep search.
 type Config struct {
-	Patterns      []string
-	Fixed         bool
-	PCRE          bool
+	// Pipelines holds one or more match pipelines, OR'd together.
+	// Each pipeline is a chain of stages; -t chains stages, bare -e starts a new pipeline.
+	// Legacy fields (Patterns, Fixed, PCRE) are still populated for backwards compatibility
+	// and converted to Pipelines in Validate().
+	Pipelines [][]StageConfig
+
+	// Legacy pattern fields — used when Pipelines is nil (backwards compat).
+	Patterns []string
+	Fixed    bool
+	PCRE     bool
+
 	IgnoreCase    bool
 	Recursive     bool
 	LineNumbers   bool
 	CountOnly     bool
 	Invert        bool
 	FileNamesOnly bool
+	OnlyMatch     bool // global -o flag (when no pipelines)
 	ContextBefore int
 	ContextAfter  int
 	WatchMode     bool
@@ -38,14 +56,64 @@ type Config struct {
 	Paths          []string
 }
 
+// NormalizePipelines converts legacy Patterns/Fixed/PCRE fields into the
+// Pipelines representation if Pipelines is not already set.
+func (c *Config) NormalizePipelines() {
+	if len(c.Pipelines) > 0 {
+		return
+	}
+	if len(c.Patterns) == 0 {
+		return
+	}
+	// Legacy mode: all patterns form a single pipeline with one stage each (OR'd).
+	// Multiple patterns with same Fixed/PCRE → single pipeline with one stage
+	// containing all patterns (handled by matcher factory as before).
+	pipeline := []StageConfig{{
+		Pattern:   c.Patterns[0],
+		Fixed:     c.Fixed,
+		PCRE:      c.PCRE,
+		OnlyMatch: c.OnlyMatch,
+	}}
+	c.Pipelines = [][]StageConfig{pipeline}
+
+	// If multiple patterns, they are OR'd — but the matcher factory already
+	// handles that via combining with |. We store them all in the first stage
+	// and let the factory deal with it.
+	if len(c.Patterns) > 1 {
+		// Store extra patterns for the factory to combine
+		c.Pipelines[0][0].Pattern = c.Patterns[0]
+		// We need all patterns accessible — keep Patterns populated for the factory
+	}
+}
+
 // Validate checks that the config is valid and returns an error if not.
 func (c *Config) Validate() error {
-	if len(c.Patterns) == 0 {
+	if len(c.Patterns) == 0 && len(c.Pipelines) == 0 {
 		return fmt.Errorf("no pattern specified")
 	}
-	if c.Fixed && c.PCRE {
-		return fmt.Errorf("cannot use -F (fixed) and -P (pcre) together")
+
+	// Validate pipelines if set
+	for i, pipeline := range c.Pipelines {
+		if len(pipeline) == 0 {
+			return fmt.Errorf("empty pipeline %d", i)
+		}
+		if pipeline[0].Pipe {
+			return fmt.Errorf("-t on first pattern has nothing to pipe from")
+		}
+		for j, stage := range pipeline {
+			if stage.Fixed && stage.PCRE {
+				return fmt.Errorf("cannot use -F and -P together on stage %d of pipeline %d", j, i)
+			}
+		}
 	}
+
+	// Legacy validation (when Pipelines not set)
+	if len(c.Pipelines) == 0 {
+		if c.Fixed && c.PCRE {
+			return fmt.Errorf("cannot use -F (fixed) and -P (pcre) together")
+		}
+	}
+
 	if c.ContextBefore < 0 {
 		return fmt.Errorf("invalid context before: %d", c.ContextBefore)
 	}

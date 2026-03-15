@@ -53,10 +53,7 @@ func ParseDirents(buf []byte, n int, dst []Dirent) []Dirent {
 
 		// d_name starts at offset+19, null-terminated
 		nameStart := offset + 19
-		nameEnd := offset + int(reclen)
-		if nameEnd > n {
-			nameEnd = n
-		}
+		nameEnd := min(offset+int(reclen), n)
 
 		// Find the null terminator
 		nameBytes := buf[nameStart:nameEnd]

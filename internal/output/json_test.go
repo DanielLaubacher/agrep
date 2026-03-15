@@ -28,7 +28,7 @@ func TestJSONFormatter_BasicMatch(t *testing.T) {
 		t.Fatalf("got %d lines, want 1", len(lines))
 	}
 
-	var jm map[string]interface{}
+	var jm map[string]any
 	if err := json.Unmarshal([]byte(lines[0]), &jm); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestJSONFormatter_MultipleMatches(t *testing.T) {
 
 	// Verify each line is valid JSON
 	for i, line := range lines {
-		var jm map[string]interface{}
+		var jm map[string]any
 		if err := json.Unmarshal([]byte(line), &jm); err != nil {
 			t.Errorf("line %d: invalid JSON: %v", i, err)
 		}
@@ -127,17 +127,17 @@ func TestJSONFormatter_MatchPositions(t *testing.T) {
 	}
 
 	got := string(f.Format(nil, result, false))
-	var jm map[string]interface{}
+	var jm map[string]any
 	if err := json.Unmarshal([]byte(strings.TrimSpace(got)), &jm); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
 
-	matches := jm["matches"].([]interface{})
+	matches := jm["matches"].([]any)
 	if len(matches) != 2 {
 		t.Fatalf("got %d match positions, want 2", len(matches))
 	}
 
-	pos0 := matches[0].(map[string]interface{})
+	pos0 := matches[0].(map[string]any)
 	if pos0["start"].(float64) != 0 || pos0["end"].(float64) != 5 {
 		t.Errorf("position[0] = %v, want {start:0, end:5}", pos0)
 	}

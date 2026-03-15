@@ -79,7 +79,7 @@ func Walk(roots []string, opts WalkOptions) (<-chan FileEntry, <-chan error) {
 			hidden:         opts.Hidden,
 			noIgnore:       opts.NoIgnore,
 			followSymlinks: opts.FollowSymlinks,
-			includeBinary: opts.IncludeBinary,
+			includeBinary:  opts.IncludeBinary,
 			globs:          opts.Globs,
 		}
 		pw.cond = sync.NewCond(&pw.mu)
@@ -97,11 +97,9 @@ func Walk(roots []string, opts WalkOptions) (<-chan FileEntry, <-chan error) {
 		workers := runtime.NumCPU()
 		var wg sync.WaitGroup
 		for range workers {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				pw.worker()
-			}()
+			})
 		}
 		wg.Wait()
 	}()
@@ -122,7 +120,7 @@ type parallelWalker struct {
 	hidden         bool
 	noIgnore       bool
 	followSymlinks bool
-	includeBinary bool
+	includeBinary  bool
 	globs          []string
 
 	mu      sync.Mutex
@@ -172,7 +170,7 @@ func (pw *parallelWalker) finish() {
 // worker processes directories from the work queue until all work is done.
 func (pw *parallelWalker) worker() {
 	buf := make([]byte, 32*1024) // per-worker getdents buffer
-	var dirents []Dirent          // per-worker reusable dirent slice
+	var dirents []Dirent         // per-worker reusable dirent slice
 	for {
 		item, ok := pw.dequeue()
 		if !ok {
@@ -415,8 +413,8 @@ func matchGlob(pattern, name string) bool {
 		if j := strings.IndexByte(pattern[i:], '}'); j >= 0 {
 			prefix := pattern[:i]
 			suffix := pattern[i+j+1:]
-			alts := strings.Split(pattern[i+1:i+j], ",")
-			for _, alt := range alts {
+			alts := strings.SplitSeq(pattern[i+1:i+j], ",")
+			for alt := range alts {
 				if matchGlob(prefix+alt+suffix, name) {
 					return true
 				}

@@ -43,16 +43,14 @@ func (s *Scheduler) Run(files <-chan walker.FileEntry) <-chan output.Result {
 
 	var wg sync.WaitGroup
 	for range s.workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for entry := range files {
 				seqNum := int(seq.Add(1))
 				result := s.processFile(entry)
 				result.SeqNum = seqNum
 				resultCh <- result
 			}
-		}()
+		})
 	}
 
 	go func() {

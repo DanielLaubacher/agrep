@@ -17,7 +17,7 @@ func makeMatchSet(data []byte, matches []matcher.Match, positions [][2]int) matc
 }
 
 func TestTextFormatter_SingleFile(t *testing.T) {
-	f := NewTextFormatter(true, false, false, false, 0)
+	f := NewTextFormatter(true, false, false, false, 0, false)
 	data := []byte("hello world\n???\nhello again\n")
 	result := Result{
 		FilePath: "test.txt",
@@ -39,7 +39,7 @@ func TestTextFormatter_SingleFile(t *testing.T) {
 }
 
 func TestTextFormatter_MultiFile(t *testing.T) {
-	f := NewTextFormatter(true, false, false, false, 0)
+	f := NewTextFormatter(true, false, false, false, 0, false)
 	data := []byte("?????\n?????\n?????\n?????\nmatch line\n")
 	result := Result{
 		FilePath: "test.txt",
@@ -59,7 +59,7 @@ func TestTextFormatter_MultiFile(t *testing.T) {
 }
 
 func TestTextFormatter_CountOnly(t *testing.T) {
-	f := NewTextFormatter(false, true, false, false, 0)
+	f := NewTextFormatter(false, true, false, false, 0, false)
 	result := Result{
 		FilePath: "test.txt",
 		MatchSet: matcher.MatchSet{
@@ -81,7 +81,7 @@ func TestTextFormatter_CountOnly(t *testing.T) {
 }
 
 func TestTextFormatter_FilesOnly(t *testing.T) {
-	f := NewTextFormatter(false, false, true, false, 0)
+	f := NewTextFormatter(false, false, true, false, 0, false)
 
 	// Has matches
 	result := Result{
@@ -104,7 +104,7 @@ func TestTextFormatter_FilesOnly(t *testing.T) {
 }
 
 func TestTextFormatter_MaxColumns(t *testing.T) {
-	f := NewTextFormatter(true, false, false, false, 20)
+	f := NewTextFormatter(true, false, false, false, 20, false)
 	data := []byte("short\nthis is a very long line that exceeds the max columns limit\n")
 	result := Result{
 		FilePath: "test.txt",
@@ -129,7 +129,7 @@ func TestTextFormatter_MaxColumns(t *testing.T) {
 func TestTextFormatter_MaxColumnsClipsPositions(t *testing.T) {
 	// Match at [6,11] in a 26-char line, maxColumns=10
 	// center=8, window centered: start=3, end=13
-	f := NewTextFormatter(false, false, false, false, 10)
+	f := NewTextFormatter(false, false, false, false, 10, false)
 	data := []byte("hello world and more stuff\n")
 	result := Result{
 		FilePath: "test.txt",
@@ -152,7 +152,7 @@ func TestTextFormatter_MaxColumnsClipsPositions(t *testing.T) {
 
 func TestTextFormatter_MaxColumnsCentered(t *testing.T) {
 	// Match deep in a long line — should be centered in the window
-	f := NewTextFormatter(false, false, false, false, 60)
+	f := NewTextFormatter(false, false, false, false, 60, false)
 	line := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa benchmark bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	data := []byte(line + "\n")
 	result := Result{

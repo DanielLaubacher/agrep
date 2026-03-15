@@ -247,7 +247,7 @@ func (r *Ring) SubmitAndWait(count uint32, fn func(cqe *CQE)) error {
 
 	// Set up SQ array: SQ[slot] = SQE index (callers fill SQEs 0..count-1)
 	tail := atomic.LoadUint32(r.sqTail)
-	for i := uint32(0); i < count; i++ {
+	for i := range count {
 		slot := (tail + i) & r.sqMask
 		*(*uint32)(unsafe.Add(r.sqArray, uintptr(slot)*4)) = i
 	}

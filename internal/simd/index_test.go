@@ -353,10 +353,7 @@ func (m *boyerMooreForBench) search(text []byte) []int {
 			offsets = append(offsets, k+1)
 			i += pLen
 		} else {
-			shift := m.badChar[text[i]]
-			if shift < 1 {
-				shift = 1
-			}
+			shift := max(m.badChar[text[i]], 1)
 			i += shift
 		}
 	}

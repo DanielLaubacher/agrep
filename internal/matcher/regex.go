@@ -8,16 +8,18 @@ import (
 )
 
 // RegexMatcher uses Go's RE2 regexp engine with optional SIMD literal prefiltering.
-// When a required literal substring is extracted from the regex AST, the matcher
-// first scans the buffer with SIMD for literal candidates, then only runs the
-// regex engine on candidate lines.
+// When required literal substrings are extracted from the regex AST, the matcher
+// first scans the buffer with SIMD for the primary literal, then verifies
+// additional literals on candidate lines before running the regex engine.
 type RegexMatcher struct {
 	re           *regexp.Regexp
 	invert       bool
 	maxCols      int
 	needLineNums bool
-	prefilter    []byte // extracted literal for SIMD prefilter (nil = no prefilter)
-	prefilterCI  bool   // use case-insensitive SIMD scan
+	prefilter    []byte   // primary extracted literal for SIMD prefilter (nil = no prefilter)
+	prefilterCI  bool     // use case-insensitive SIMD scan for primary
+	extraFilters [][]byte // additional required literals for cascaded filtering
+	extraCI      []bool   // case-insensitive flags for each extra filter
 }
 
 // NewRegexMatcher creates a RegexMatcher for the given pattern.
@@ -32,12 +34,27 @@ func NewRegexMatcher(pattern string, ignoreCase bool, invert bool) (*RegexMatche
 
 	m := &RegexMatcher{re: re, invert: invert}
 
-	// Extract a literal prefilter from the regex AST.
+	// Extract literal prefilters from the regex AST.
 	// Invert mode checks every line, so prefilter doesn't help.
 	if !invert {
-		if info, ok := extractLiteral(pattern, ignoreCase); ok {
-			m.prefilter = []byte(info.literal)
-			m.prefilterCI = info.ignoreCase
+		lits := extractLiterals(pattern, ignoreCase)
+		if len(lits) > 0 {
+			// Primary prefilter: first literal in source order. This enables
+			// position-aware cascaded checking — each extra literal is verified
+			// to appear after the previous one, which is critical for single-line
+			// files (minified code) where line-level filtering is meaningless.
+			m.prefilter = []byte(lits[0].literal)
+			m.prefilterCI = lits[0].ignoreCase
+
+			// Extra filters: subsequent literals in source order. Only include
+			// literals >= 4 bytes to avoid overhead from low-selectivity checks.
+			for _, l := range lits[1:] {
+				if len(l.literal) < 4 {
+					continue
+				}
+				m.extraFilters = append(m.extraFilters, []byte(l.literal))
+				m.extraCI = append(m.extraCI, l.ignoreCase)
+			}
 		}
 	}
 
@@ -46,6 +63,30 @@ func NewRegexMatcher(pattern string, ignoreCase bool, invert bool) (*RegexMatche
 
 func (m *RegexMatcher) hasPrefilter() bool {
 	return len(m.prefilter) > 0
+}
+
+// lineContainsAllAfter checks whether a line contains all extra filter literals
+// at or after the given start position. This ordering constraint is critical for
+// minified files where the entire file is one line — it ensures the extra literals
+// appear in the correct order relative to the primary prefilter match, avoiding
+// false positives from literals that appear earlier in the line.
+func (m *RegexMatcher) lineContainsAllAfter(line []byte, after int) bool {
+	pos := after
+	for i, pat := range m.extraFilters {
+		remaining := line[pos:]
+		var idx int
+		if m.extraCI[i] {
+			idx = simd.IndexCaseInsensitive(remaining, pat)
+		} else {
+			idx = simd.Index(remaining, pat)
+		}
+		if idx < 0 {
+			return false
+		}
+		// Advance past this match for ordered checking
+		pos += idx + len(pat)
+	}
+	return true
 }
 
 func (m *RegexMatcher) MatchExists(data []byte) bool {
@@ -84,7 +125,11 @@ func (m *RegexMatcher) MatchExists(data []byte) bool {
 			lineEnd = absOff + i
 		}
 
-		if m.re.Match(data[lineStart:lineEnd]) {
+		line := data[lineStart:lineEnd]
+		posInLine := absOff - lineStart + len(m.prefilter)
+
+		// Check extra literals after primary match before running regex
+		if m.lineContainsAllAfter(line, posInLine) && m.re.Match(line) {
 			return true
 		}
 
@@ -140,7 +185,9 @@ func (m *RegexMatcher) CountAll(data []byte) int {
 		}
 		lastLineEnd = lineEnd
 
-		if m.re.Match(data[lineStart:lineEnd]) {
+		line := data[lineStart:lineEnd]
+		posInLine := off - lineStart + len(m.prefilter)
+		if m.lineContainsAllAfter(line, posInLine) && m.re.Match(line) {
 			count++
 		}
 	}
@@ -165,9 +212,9 @@ func (m *RegexMatcher) FindAll(data []byte) MatchSet {
 }
 
 // findAllPrefiltered scans the buffer with SIMD for literal candidates,
-// extracts candidate lines, runs the regex on each, and collects results.
+// verifies extra literals, then runs the regex on surviving lines.
 func (m *RegexMatcher) findAllPrefiltered(data []byte) MatchSet {
-	// Step 1: SIMD scan for all literal occurrences.
+	// Step 1: SIMD scan for all primary literal occurrences.
 	var offsets []int
 	if m.prefilterCI {
 		offsets = simd.IndexAllCaseInsensitive(data, m.prefilter)
@@ -178,8 +225,7 @@ func (m *RegexMatcher) findAllPrefiltered(data []byte) MatchSet {
 		return MatchSet{}
 	}
 
-	// Step 2: Convert offsets to candidate lines, deduplicated.
-	// Step 3: Run regex on each candidate line, collect buffer-absolute locs.
+	// Step 2: Resolve candidate lines, check extra literals, run regex on survivors.
 	var allLocs [][2]int
 	lastLineEnd := -1
 
@@ -204,8 +250,14 @@ func (m *RegexMatcher) findAllPrefiltered(data []byte) MatchSet {
 		}
 		lastLineEnd = lineEnd
 
-		// Run regex on this candidate line.
+		// Check extra literals after primary match before running regex.
 		line := data[lineStart:lineEnd]
+		posInLine := off - lineStart + len(m.prefilter)
+		if !m.lineContainsAllAfter(line, posInLine) {
+			continue
+		}
+
+		// Run regex on this candidate line.
 		lineLocs := m.re.FindAllIndex(line, -1)
 		for _, loc := range lineLocs {
 			allLocs = append(allLocs, [2]int{lineStart + loc[0], lineStart + loc[1]})

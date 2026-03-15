@@ -2,6 +2,7 @@ package matcher
 
 import (
 	"regexp/syntax"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -19,6 +20,24 @@ type literalInfo struct {
 // literal substring that must appear in any match. Returns the literal info
 // and true if a usable literal was found (length >= minPrefilterLen).
 func extractLiteral(pattern string, ignoreCase bool) (literalInfo, bool) {
+	lits := extractLiterals(pattern, ignoreCase)
+	if len(lits) == 0 {
+		return literalInfo{}, false
+	}
+	// Pick longest
+	best := lits[0]
+	for _, l := range lits[1:] {
+		if len(l.literal) > len(best.literal) {
+			best = l
+		}
+	}
+	return best, true
+}
+
+// extractLiterals parses a regex pattern and extracts all required literal
+// substrings that must appear in any match. Returns them in source order.
+// Each literal has length >= minPrefilterLen and is all-ASCII.
+func extractLiterals(pattern string, ignoreCase bool) []literalInfo {
 	flags := syntax.Perl
 	if ignoreCase {
 		flags |= syntax.FoldCase
@@ -26,40 +45,35 @@ func extractLiteral(pattern string, ignoreCase bool) (literalInfo, bool) {
 
 	re, err := syntax.Parse(pattern, flags)
 	if err != nil {
-		return literalInfo{}, false
+		return nil
 	}
 	re = re.Simplify()
 
 	// Safety: if any node uses DotNL ((?s) flag), matches can span lines.
-	// Our prefilter verifies regex per-line, so this would cause false negatives.
 	if hasDotNL(re) {
-		return literalInfo{}, false
+		return nil
 	}
 
 	candidates := extractFromNode(re)
 	if len(candidates) == 0 {
-		return literalInfo{}, false
+		return nil
 	}
 
-	// Pick the longest candidate that is all-ASCII.
-	var best candidate
+	// Convert all qualifying candidates to literalInfo, preserving source order.
+	var result []literalInfo
 	for _, c := range candidates {
-		if len(c.runes) > len(best.runes) && isASCIIRunes(c.runes) {
-			best = c
+		if len(c.runes) < minPrefilterLen || !isASCIIRunes(c.runes) {
+			continue
 		}
+		ci := c.foldCase || ignoreCase
+		lit := string(c.runes)
+		if ci {
+			lit = strings.ToLower(lit)
+		}
+		result = append(result, literalInfo{literal: lit, ignoreCase: ci})
 	}
 
-	lit := string(best.runes)
-	if len(lit) < minPrefilterLen {
-		return literalInfo{}, false
-	}
-
-	ci := best.foldCase || ignoreCase
-	if ci {
-		lit = strings.ToLower(lit)
-	}
-
-	return literalInfo{literal: lit, ignoreCase: ci}, true
+	return result
 }
 
 // candidate is a literal substring found in the regex AST.
@@ -162,12 +176,7 @@ func hasDotNL(re *syntax.Regexp) bool {
 		// OpAnyChar means dot-matches-newline is active.
 		return true
 	}
-	for _, sub := range re.Sub {
-		if hasDotNL(sub) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(re.Sub, hasDotNL)
 }
 
 // isASCIIRunes returns true if all runes are ASCII.

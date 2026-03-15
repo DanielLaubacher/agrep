@@ -31,7 +31,7 @@ Orchestration: `internal/cli/run.go`
 ## Design Principles
 
 - **Linux-only**: Use Linux syscalls directly (`getdents64`, `open`, `mmap`, `fadvise`, `madvise`, `writev`, `inotify`, `epoll`). Never use portable abstractions when a Linux-specific path is faster.
-- **SIMD-accelerated**: Fixed-string search uses AVX2 SIMD-friendly Horspool (first+last byte prefilter, 32 positions/iteration) via Go 1.26 `simd/archsimd`.
+- **SIMD-accelerated**: Fixed-string search uses AVX2 SIMD-friendly Horspool (first+last byte prefilter, 32 positions/iteration) via Go 1.26 `simd/archsimd`. Regex patterns auto-extract multiple required literals for cascaded SIMD prefiltering.
 - **Search-then-split**: All matchers search the whole buffer first, then extract line boundaries around matches. Only lines with matches are processed.
 - **Zero allocations on hot path**: Use `sync.Pool`, `[]byte` everywhere, no `string` conversions during search.
 - **Pure Go, no cgo**: `golang.org/x/sys`, `go.elara.ws/pcre`, `github.com/sabhiram/go-gitignore`, `simd/archsimd`. No C bindings, no external CLI frameworks.
@@ -55,7 +55,7 @@ Orchestration: `internal/cli/run.go`
 - `internal/walker/` — directory traversal (getdents64 + dirent parsing)
 - `internal/scheduler/` — worker pool + concurrency
 - `internal/input/` — file reading strategies (buffered, mmap, streaming)
-- `internal/matcher/` — pattern matching (regex, fixed, boyer-moore, aho-corasick, pcre)
+- `internal/matcher/` — pattern matching (regex, fixed, boyer-moore, aho-corasick, pcre, pipeline)
 - `internal/simd/` — AVX2 SIMD primitives (IndexByte, IndexAll, Count, ToLowerASCII via archsimd)
 - `internal/output/` — formatting + ordered writing
 - `internal/watch/` — inotify file watching

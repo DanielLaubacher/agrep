@@ -14,14 +14,8 @@ func snippetFromOffset(data []byte, off int, maxCols int) (snippetStart int, sni
 	// Determine search bounds
 	var lo, hi int
 	if maxCols > 0 {
-		lo = off - maxCols
-		if lo < 0 {
-			lo = 0
-		}
-		hi = off + maxCols
-		if hi > n {
-			hi = n
-		}
+		lo = max(off-maxCols, 0)
+		hi = min(off+maxCols, n)
 	} else {
 		lo = 0
 		hi = n
@@ -110,10 +104,7 @@ func matchSetFromLocs(data []byte, locs [][2]int, maxCols int, needLineNums bool
 			prevOff = matchStart
 		}
 
-		posEnd := posInSnippet + (matchEnd - matchStart)
-		if posEnd > snippetLen {
-			posEnd = snippetLen
-		}
+		posEnd := min(posInSnippet+(matchEnd-matchStart), snippetLen)
 
 		// Overwrite locs[i] in-place with snippet-relative position.
 		// Safe because we already read loc above and iteration is forward-only.

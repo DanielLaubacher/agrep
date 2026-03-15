@@ -17,6 +17,7 @@
 4. **O_NOATIME**: Every file open must include `unix.O_NOATIME`.
 5. **Pool buffers**: Use `sync.Pool` for any buffer allocated in a loop or per-file.
 6. **Interfaces**: Matchers implement `Matcher` (internal/matcher/match.go), readers implement `Reader` (internal/input/reader.go).
+7. **Per-stage flags**: `-F`, `-P`, `-t`, `-o` are per-stage modifiers on `-e`. They accumulate and attach to the next `-e`, then reset. `-t` chains stages (AND pipeline), bare `-e` starts a new OR branch. `-o` outputs only matched text.
 
 ## Key Syscalls Used
 

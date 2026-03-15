@@ -16,16 +16,18 @@ type TextFormatter struct {
 	filesOnly   bool
 	useColor    bool
 	maxColumns  int
+	onlyMatch   bool // -o: output only matched text
 }
 
 // NewTextFormatter creates a TextFormatter.
-func NewTextFormatter(lineNumbers bool, countOnly bool, filesOnly bool, useColor bool, maxColumns int) *TextFormatter {
+func NewTextFormatter(lineNumbers bool, countOnly bool, filesOnly bool, useColor bool, maxColumns int, onlyMatch bool) *TextFormatter {
 	return &TextFormatter{
 		lineNumbers: lineNumbers,
 		countOnly:   countOnly,
 		filesOnly:   filesOnly,
 		useColor:    useColor,
 		maxColumns:  maxColumns,
+		onlyMatch:   onlyMatch,
 	}
 }
 
@@ -54,8 +56,14 @@ func (f *TextFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 	}
 
 	ms := &result.MatchSet
-	for i := range ms.Matches {
-		buf = f.formatMatch(buf, result.FilePath, ms, i, multiFile)
+	if f.onlyMatch {
+		for i := range ms.Matches {
+			buf = f.formatOnlyMatch(buf, result.FilePath, ms, i, multiFile)
+		}
+	} else {
+		for i := range ms.Matches {
+			buf = f.formatMatch(buf, result.FilePath, ms, i, multiFile)
+		}
 	}
 	return buf
 }
@@ -143,6 +151,77 @@ func (f *TextFormatter) formatMatch(buf []byte, filePath string, ms *matcher.Mat
 	return buf
 }
 
+// formatOnlyMatch outputs only the matched text portions, one per line.
+// This implements grep -o behavior: each match position becomes its own output line.
+func (f *TextFormatter) formatOnlyMatch(buf []byte, filePath string, ms *matcher.MatchSet, idx int, multiFile bool) []byte {
+	m := &ms.Matches[idx]
+
+	// Skip separators and context lines
+	if m.LineStart < 0 || m.IsContext {
+		return buf
+	}
+
+	lineBytes := ms.Data[m.LineStart : m.LineStart+m.LineLen]
+	positions := ms.MatchPositions(idx)
+
+	sep := ":"
+
+	for _, pos := range positions {
+		start, end := pos[0], pos[1]
+		if start >= len(lineBytes) {
+			break
+		}
+		if end > len(lineBytes) {
+			end = len(lineBytes)
+		}
+		if start >= end {
+			continue
+		}
+		matchText := lineBytes[start:end]
+
+		// Filename prefix
+		if multiFile {
+			if f.useColor {
+				buf = append(buf, ansiMagenta...)
+				buf = append(buf, filePath...)
+				buf = append(buf, ansiReset...)
+				buf = append(buf, ansiCyan...)
+				buf = append(buf, sep...)
+				buf = append(buf, ansiReset...)
+			} else {
+				buf = append(buf, filePath...)
+				buf = append(buf, sep...)
+			}
+		}
+
+		// Line number
+		if f.lineNumbers {
+			if f.useColor {
+				buf = append(buf, ansiGreen...)
+				buf = strconv.AppendInt(buf, int64(m.LineNum), 10)
+				buf = append(buf, ansiReset...)
+				buf = append(buf, ansiCyan...)
+				buf = append(buf, sep...)
+				buf = append(buf, ansiReset...)
+			} else {
+				buf = strconv.AppendInt(buf, int64(m.LineNum), 10)
+				buf = append(buf, sep...)
+			}
+		}
+
+		// Output only the matched text
+		if f.useColor {
+			buf = append(buf, ansiBoldRed...)
+			buf = append(buf, matchText...)
+			buf = append(buf, ansiReset...)
+		} else {
+			buf = append(buf, matchText...)
+		}
+		buf = append(buf, '\n')
+	}
+	return buf
+}
+
 // truncateWindow computes a [start, end) byte window of maxCols bytes
 // centered on the first match position.
 func truncateWindow(line []byte, positions [][2]int, maxCols int) (int, int) {
@@ -151,17 +230,11 @@ func truncateWindow(line []byte, positions [][2]int, maxCols int) (int, int) {
 		center = (positions[0][0] + positions[0][1]) / 2
 	}
 
-	start := center - maxCols/2
-	if start < 0 {
-		start = 0
-	}
+	start := max(center-maxCols/2, 0)
 	end := start + maxCols
 	if end > len(line) {
 		end = len(line)
-		start = end - maxCols
-		if start < 0 {
-			start = 0
-		}
+		start = max(end-maxCols, 0)
 	}
 	return start, end
 }

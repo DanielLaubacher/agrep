@@ -18,6 +18,8 @@ Built vibe coding with [Claude Code](https://claude.com/claude-code).
 - **Raw syscalls** — `getdents64`, `open`, `pread`, `mmap`, `writev`, `inotify`, `epoll` — no portable Go abstractions
 - **Parallel recursive search** — worker pool distributes files across `NumCPU * 2` goroutines with deterministic output ordering
 - **Multiple pattern engines** — Go regex (RE2), PCRE2 (pure Go port), Boyer-Moore with SIMD, Aho-Corasick multi-pattern
+- **Regex pipeline** (`-t`/`-o`) — chain patterns with different engines; SIMD fixed-string stages eliminate lines before expensive regex runs
+- **Multi-literal prefilter** — regex AST analysis extracts all required literals for cascaded SIMD rejection before the regex engine runs
 - **Watch mode** — inotify + epoll file watching with log rotation handling
 - **JSON output** — JSON Lines format for programmatic consumption
 - **Pure Go, no cgo** — no C bindings or assembly files
@@ -90,6 +92,15 @@ gogrep -F -e "timeout" -e "refused" -e "EOF" app.log
 
 # PCRE2 regex with lookbehind
 gogrep -P '(?<=error:\s)\w+' app.log
+
+# Regex pipeline: SIMD prefilter → extract digits (like grep|grep -o)
+gogrep -Fe 'ERROR' -toe '\d+' app.log
+
+# Only-matching (like grep -o)
+gogrep -oe '\d+' app.log
+
+# Three-stage pipeline mixing engines
+gogrep -Fe 'HTTP' -Fte 'status' -toe '\d+' access.log
 
 # Context lines
 gogrep -C3 "panic" app.log

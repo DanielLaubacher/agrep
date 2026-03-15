@@ -8,10 +8,7 @@ import (
 // IsBinary checks if data appears to be binary by scanning for NUL bytes
 // in the first 8KB, matching GNU grep behavior.
 func IsBinary(data []byte) bool {
-	limit := 8192
-	if len(data) < limit {
-		limit = len(data)
-	}
+	limit := min(len(data), 8192)
 	return bytes.IndexByte(data[:limit], 0) >= 0
 }
 
@@ -118,7 +115,7 @@ var binaryExts = map[string]struct{}{
 	".sqlite": {},
 	".mdb":    {},
 	// Misc binary
-	".swp": {},
-	".swo": {},
+	".swp":      {},
+	".swo":      {},
 	".DS_Store": {},
 }

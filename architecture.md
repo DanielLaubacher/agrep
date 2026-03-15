@@ -86,7 +86,7 @@ An `AdaptiveReader` automatically selects between the two based on a configurabl
 
 ## Pattern Matching
 
-`internal/matcher/` provides four matcher backends, all implementing the same interface:
+`internal/matcher/` provides four matcher backends plus pipeline composition, all implementing the same interface:
 
 ```go
 type Matcher interface {
@@ -107,7 +107,46 @@ type Matcher interface {
 | `-F` + 1 pattern | `BoyerMooreMatcher` | `bytes.Index` (stdlib AVX2 asm); case-insensitive uses custom SIMD Horspool |
 | `-F` + N patterns | `AhoCorasickMatcher` | Hand-written trie with `[256]*node` children + BFS failure links |
 | Literal pattern (no metacharacters) | `BoyerMooreMatcher` / `AhoCorasickMatcher` | Auto-promoted from regex to fixed-string search |
-| Default (regex) | `RegexMatcher` | Go stdlib `regexp` (RE2) |
+| Default (regex) | `RegexMatcher` | Go stdlib `regexp` (RE2) with multi-literal SIMD prefilter |
+| `-t` pipeline | `PipelineMatcher` | Chains any of the above; stages filter lines in AND sequence |
+| Multiple pipelines (OR) | `MultiPipelineMatcher` | OR's multiple `PipelineMatcher` results, deduplicates by line |
+
+### Regex Pipeline (`-t` / `-o`)
+
+The `-t` (pipe) and `-o` (only-matching) flags enable regex composition — chaining patterns where each stage filters lines that matched the previous stage. The final stage's match positions define the output highlights.
+
+```
+gogrep -Fe 'ERROR' -Fte 'timeout' -toe '\d+' app.log
+       ^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^
+       stage 0     stage 1         stage 2
+       (SIMD BM)   (SIMD BM)      (RE2, -o output)
+```
+
+**Semantics:**
+- `-e` without `-t`: starts a new OR branch (backwards compatible with multiple `-e`).
+- `-te`: appends to the current pipeline (AND chain).
+- `-o` on a stage: output only the matched text (like `grep -o`).
+- `-F`, `-P` are per-stage: each stage can use a different engine.
+- Flags combine naturally: `-Ftoe 'pat'` = fixed + pipe + only-match + pattern.
+
+**Pipeline execution (`PipelineMatcher.FindAll`):**
+1. Stage 0 runs `FindAll(data)` on the full buffer — gets candidate lines.
+2. Stages 1..N-1 run `MatchExists(line)` on each candidate (cheap filter).
+3. Final stage runs `FindAll(line)` on survivors to extract match positions.
+4. Line metadata (line number, byte offset) is preserved from stage 0.
+
+**Performance:** When all stages are fixed strings (`-F`), the pipeline uses only SIMD search — no regex engine at all. This can outperform ripgrep on ultra-sparse multi-condition searches (measured 1.14x faster at 0.1% hit rate).
+
+### Multi-Literal Prefilter
+
+`RegexMatcher` automatically extracts all required literal substrings from the regex AST (via `extractLiterals` in `literal.go`). For a regex like `ERROR.*code=[45]\d{2}.*request_id=[0-9a-f]+`:
+
+1. AST analysis finds three required literals: `"ERROR"`, `"code="`, `"request_id="`.
+2. The first literal (`"ERROR"`) becomes the primary SIMD prefilter.
+3. Remaining literals (>= 4 bytes) become extra filters, checked **in source order** and **position-aware** (each must appear after the previous).
+4. Only lines passing all literal checks run through the regex engine.
+
+Position-aware ordering is critical for minified files (single-line, multi-MB) where line-level filtering is meaningless — the ordered check ensures the literals appear in the correct sequence within the line, rejecting false positives that a line-level check would miss.
 
 ### Search-then-Split
 
