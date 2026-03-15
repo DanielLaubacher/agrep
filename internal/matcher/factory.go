@@ -2,6 +2,7 @@ package matcher
 
 import (
 	"fmt"
+	"regexp/syntax"
 	"strings"
 )
 
@@ -100,13 +101,37 @@ func NewMatcher(patterns []string, fixed bool, usePCRE bool, ignoreCase bool, in
 		pattern = combined.String()
 	}
 
-	m, err := NewRegexMatcher(pattern, ignoreCase, invert)
-	if err != nil {
-		return nil, err
+	// Optimization: detect alternation-of-literals in a single regex pattern
+	// (e.g., "ERROR|INFO|function") and route to Aho-Corasick for SIMD search.
+	// This is what ripgrep does with its Teddy multi-pattern engine.
+	if alts := extractAlternationLiterals(pattern); len(alts) > 0 {
+		if len(alts) == 1 {
+			m := NewBoyerMooreMatcher(alts[0], ignoreCase, invert)
+			m.maxCols = opts.MaxCols
+			m.needLineNums = opts.NeedLineNums
+			return m, nil
+		}
+		m := NewAhoCorasickMatcher(alts, ignoreCase, invert)
+		m.maxCols = opts.MaxCols
+		m.needLineNums = opts.NeedLineNums
+		return m, nil
 	}
-	m.maxCols = opts.MaxCols
-	m.needLineNums = opts.NeedLineNums
-	return m, nil
+
+	// Use FastRegexMatcher (lazy DFA engine) for better performance
+	fm, err := NewFastRegexMatcher(pattern, ignoreCase, invert)
+	if err != nil {
+		// Fall back to stdlib RegexMatcher if our engine can't handle it
+		m, err2 := NewRegexMatcher(pattern, ignoreCase, invert)
+		if err2 != nil {
+			return nil, err2
+		}
+		m.maxCols = opts.MaxCols
+		m.needLineNums = opts.NeedLineNums
+		return m, nil
+	}
+	fm.maxCols = opts.MaxCols
+	fm.needLineNums = opts.NeedLineNums
+	return fm, nil
 }
 
 // NewMatcherFromPipelines creates a Matcher from pipeline stage configurations.
@@ -181,4 +206,63 @@ func buildPipeline(stages []StageConfig, ignoreCase bool, invert bool, opts Matc
 // and can be treated as a fixed string.
 func isLiteral(pattern string) bool {
 	return !strings.ContainsAny(pattern, `\.+*?()|[]{}^$`)
+}
+
+// extractAlternationLiterals parses a regex and returns the literal strings
+// if the pattern is a pure alternation of literals (e.g., "foo|bar|baz").
+// Returns nil if the pattern has any non-literal branches or is not
+// a simple alternation.
+func extractAlternationLiterals(pattern string) []string {
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return nil
+	}
+	re = re.Simplify()
+
+	switch re.Op {
+	case syntax.OpLiteral:
+		// Single literal: return it
+		return []string{string(re.Rune)}
+
+	case syntax.OpAlternate:
+		// Check if every branch is a literal
+		lits := make([]string, 0, len(re.Sub))
+		for _, sub := range re.Sub {
+			s := extractLiteralFromNode(sub)
+			if s == "" {
+				return nil
+			}
+			lits = append(lits, s)
+		}
+		return lits
+
+	case syntax.OpCapture:
+		// Unwrap capture group: (foo|bar|baz) → foo|bar|baz
+		if len(re.Sub) == 1 {
+			return extractAlternationLiterals(string(re.Sub[0].String()))
+		}
+		return nil
+
+	default:
+		return nil
+	}
+}
+
+// extractLiteralFromNode returns the literal string from an AST node,
+// or "" if the node is not a pure literal (possibly wrapped in a capture).
+func extractLiteralFromNode(re *syntax.Regexp) string {
+	switch re.Op {
+	case syntax.OpLiteral:
+		if re.Flags&syntax.FoldCase != 0 {
+			return "" // case-folded literals need special handling
+		}
+		return string(re.Rune)
+	case syntax.OpCapture:
+		if len(re.Sub) == 1 {
+			return extractLiteralFromNode(re.Sub[0])
+		}
+		return ""
+	default:
+		return ""
+	}
 }
