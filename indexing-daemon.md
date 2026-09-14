@@ -29,19 +29,36 @@ Consequences, stated as rules:
 
 ```
 gogrep (client, unchanged CLI)
-   │  1. resolve search root against daemon registry
-   │  2. send query plan over unix socket (50ms budget)
-   │  3. on any error/timeout/absence → cold scan, identical output
+   │  1. send search path + query plan to the well-known socket
+   │     ($XDG_RUNTIME_DIR/gogrep/daemon.sock, 50ms budget)
+   │  2. daemon longest-prefix-matches the path against its root table
+   │  3. on any error/timeout/absence/uncovered path → cold scan,
+   │     identical output
    ▼
-gogrep serve ROOT  (same binary, subcommand)
-   ├── trigram index  (mmap'd segments in $XDG_CACHE_HOME/gogrep/<root-id>/)
-   ├── token vocabulary  (word → file/line counts; powers suggest + IDF rank)
-   ├── inotify journal  (recursive watch → dirty set → debounced re-index,
-   │                     monotonically increasing corpus version)
-   └── socket API  ($XDG_RUNTIME_DIR/gogrep/<root-id>.sock, 0700;
-                    registry file maps root paths → sockets)
+gogrep serve  (ONE daemon per user — watchman model — hosting many roots)
+   ├── root table: path → independent index unit
+   │     each root has its own:
+   │       • trigram segments ($XDG_CACHE_HOME/gogrep/<root-id>/)
+   │       • token vocabulary (word → file/line counts; suggest + IDF)
+   │       • inotify subtree + journal + monotonic corpus version
+   │       • idle timer (cold roots drop mmaps/watches, keep registration)
+   └── one socket API for all roots (0700 runtime dir)
 ```
 
+- **One daemon per user, many roots**: agents in any repo talk to one
+  well-known socket — no per-root discovery or startup. Roots share the
+  process but no state: independent segments, versions, watches, and
+  failure modes (one root's inotify overflow or rebuild never affects
+  another). Registration via `gogrep index ROOT`; optional opt-in lazy
+  adoption indexes a new root in the background after its first (cold)
+  search. In phase D this also yields a single MCP endpoint spanning
+  every corpus.
+- **Root-scoped tokens**: corpus versions, `--changed-since` cursors, and
+  session ids are all namespaced `<root-id>:<value>`; the daemon rejects
+  tokens presented against the wrong root rather than answering nonsense.
+  Concurrent agents across repos hold one cursor/session per root and
+  cannot interfere with each other; concurrent readers of the same root
+  get lock-free immutable epoch snapshots.
 - **Same binary, separate identity**: `gogrep serve` keeps distribution
   simple; the daemon code must add no dependencies or init cost to the
   scanner path (the /etc/services lesson).
@@ -104,7 +121,9 @@ output ethos; trivially debuggable with `nc`):
 - `changed {since} → {paths, version}`
 - `vocab {fragment, limit} → {terms: [{t, files, lines}]}`
 - `session.open {plan} / session.next {id, cursor} / session.refine {id, plan}`
-- `stat {} → {version, files, segments, dirty, mem}`
+- `resolve {path} → {root, version} | {uncovered}`
+- `roots.add {path} / roots.list {}`
+- `stat {root?} → {version, files, segments, dirty, mem}`
 
 The client sends *plans* (extracted literals/trigrams + flags), not raw
 patterns — planning stays in one place (the client's compile step, which
@@ -149,8 +168,9 @@ sessions as first-class tools. The CLI remains one client among two.
    line-range postings — decide with measurements in phase A.
 2. **Daemon supervision**: none/manual for v1 (leaning); systemd user
    units documented, not required.
-3. **Multi-root queries** (paths spanning daemons): v1 requires a single
-   covering root, else cold scan (leaning — simplicity).
+3. **Multi-root queries** (paths spanning roots, or partially covered):
+   v1 requires a single covering root, else cold scan (settled — see the
+   one-daemon/many-roots section; correctness by retreat).
 4. **Vocabulary tokenization**: identifier-aware splitting (camelCase,
    snake_case) on by default (leaning yes — it made --suggest useful).
 
