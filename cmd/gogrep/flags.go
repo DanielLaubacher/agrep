@@ -52,6 +52,8 @@ Agent options (see agent-mode.md):
       --use-index          Build/use a trigram index for recursive search;
                            auto-refreshed by a stat sweep on every query
       --clear-index PATH   Delete index state for every root at/under PATH
+      --skill              Print agent operating instructions (workflow,
+                           JSON contract, citation/verification loop)
 
 Pipeline:
   Flags -F, -P, -t, -o are per-stage modifiers that apply to the next -e.
@@ -205,6 +207,9 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			cfg.WatchMode = true
 		case "-h", "--help":
 			showHelp = true
+		case "--skill":
+			fmt.Print(skillText)
+			os.Exit(0)
 		case "-B", "--before-context":
 			v, ok := nextVal()
 			if !ok {

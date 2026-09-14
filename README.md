@@ -134,8 +134,9 @@ gogrep is purpose-built to serve AI agents as a sensing API: output token
 budgets (`--max-tokens`), corpus surveys (`--outline --top K`), Markdown
 section context (`--sections`), one-pass multi-query execution
 (`--batch`), zero-hit variant guidance (`--suggest`), and verifiable
-citation spans (`--json` + `--get-region`). See
-[agent-mode.md](agent-mode.md) for the design and examples.
+citation spans (`--json` + `--get-region`). Run `gogrep --skill` to get
+the agent operating manual (~850 tokens) for loading into an agent's
+context. See [agent-mode.md](agent-mode.md) for the design and examples.
 
 A daemonless trigram index (`--use-index`) prunes repeated searches over
 slowly-changing corpora: candidates come from the index, a per-query
