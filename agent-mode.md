@@ -67,6 +67,50 @@ exact bytes for a region id — an agent can cite a span in an answer and
 later re-fetch or verify it without re-reading the file. Region ids are
 self-contained: no index or daemon required.
 
+## Phase 2 (implemented) — precision, scoping, honesty
+
+### 7. Identifier matching — `--ident`
+The pattern is an identifier name; matches every case convention
+(camelCase, PascalCase, snake_case, kebab-case, SCREAMING_SNAKE, flat),
+word-bounded — `Match` does not hit `MatchSet`. A rewrite to
+`(?i)\bconnect[_-]?timeout\b` routed through the normal engine factory.
+The proactive twin of `--suggest`.
+
+### 8. Enclosing scope — `--scope`
+`--sections` generalized to code: a bounded backward sticky-scope scan
+returns the enclosing definition line (per-language predicates chosen by
+extension; Markdown falls back to headings). JSON `"scope"` field, text
+`§` group lines.
+
+### 9. Value enumeration — `--histogram`
+Distinct matched texts with occurrence/file counts, most frequent first
+(`sort | uniq -c` built in). Composes with `-o` pipelines; `--top K`.
+
+### 10. Corpus scoping — `--changed-since REF`, `--files-from`, file conditions
+`--changed-since` restricts any mode to the git diff surface (plus
+untracked); `--files-from -` feeds one query's `-l` output into the
+next; `--with-file`/`--without-file` express "files matching A but
+also/never B" as a Matcher wrapper (suppressed counts reported). All
+flow through one fileSource helper.
+
+### 11. Citation ergonomics — line regions + `--expand`
+`--get-region` accepts `path@:120-160` line form; `--expand N` widens
+any region by whole lines. The cite loop also serves "show me the
+neighborhood".
+
+### 12. Output honesty — error objects, `--collapse`, `--rank density`
+Unreadable files emit `{"type":"error"}` in-stream and every summary
+counts `"errors"` (the recursive path previously dropped them
+silently). `--collapse` suppresses repeats of an identical line past 3,
+reporting exactly what was hidden. `--outline --rank density` orders by
+matches/KB and demotes vendored/generated files.
+
+### 13. Multiline — `-U`
+Patterns match across lines (RE2 whole-buffer; extraction spans the
+block, `(?m)` anchors per line). Spans/regions cover the block, so
+multiline citations verify like any other. Unsupported combos (`-P`,
+`-v`, `-t`, `--watch`) rejected at validation.
+
 ## Deferred (daemon phase / later)
 
 See **indexing-daemon.md** for the full design of this phase.
@@ -87,8 +131,8 @@ See **indexing-daemon.md** for the full design of this phase.
 - Every feature is stateless and works on a cold tree — no setup step.
 - Human output remains grep-compatible unless an agent flag is passed.
 - JSON stays JSON-Lines: one object per line, `type` field discriminates
-  (`match`, `count`, `file`, `outline`, `summary`, `suggest`,
-  `suggest_summary`).
+  (`match`, `count`, `file`, `outline`, `variant`, `summary`, `suggest`,
+  `suggest_summary`, `collapsed`, `error`).
 - Every `--json` run ends with a `summary` trailer carrying exact totals
   (`-c` emits `count` objects, `-l` emits `file` objects — never
   degenerate match objects). `--batch` summaries carry per-query totals,
