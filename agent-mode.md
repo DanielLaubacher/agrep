@@ -60,6 +60,8 @@ self-contained: no index or daemon required.
 
 ## Deferred (daemon phase / later)
 
+See **indexing-daemon.md** for the full design of this phase.
+
 - **Trigram index daemon** (`gogrep serve`) with inotify change journal:
   millisecond repeated queries, `--changed-since`, sessions/cursors, and
   a vocabulary that makes `--suggest` free instead of a rescan.
