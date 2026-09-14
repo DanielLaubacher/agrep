@@ -295,23 +295,36 @@ func runSuggest(pattern string, paths []string, reader input.Reader, w *output.W
 		return
 	}
 
-	var buf []byte
-	if !cfg.JSONOutput {
-		buf = append(buf, "[gogrep] no matches for '"...)
-		buf = append(buf, pattern...)
-		buf = append(buf, "'; variants that do occur:\n"...)
+	// Probe all variants first so the report can lead with the most
+	// selective (rarest) ones — those are the informative next queries.
+	type hit struct {
+		v     suggestVariant
+		lines int
+		files int
 	}
-	found := 0
-
+	var hits []hit
 	for _, v := range variants {
 		m, err := matcher.NewMatcher([]string{v.pattern}, true, false, true, false, matcher.MatcherOpts{})
 		if err != nil {
 			continue
 		}
 		lines, files := probeCount(paths, m, reader, cfg)
-		if lines == 0 {
-			continue
+		if lines > 0 {
+			hits = append(hits, hit{v, lines, files})
 		}
+	}
+	sort.Slice(hits, func(i, j int) bool { return hits[i].lines < hits[j].lines })
+
+	var buf []byte
+	if !cfg.JSONOutput && len(hits) > 0 {
+		buf = append(buf, "[gogrep] no matches for '"...)
+		buf = append(buf, pattern...)
+		buf = append(buf, "'; variants that do occur (rarest first):\n"...)
+	}
+	found := 0
+
+	for _, h := range hits {
+		v, lines, files := h.v, h.lines, h.files
 		found++
 		if cfg.JSONOutput {
 			buf = append(buf, `{"type":"suggest","variant":`...)
