@@ -19,9 +19,10 @@ Consequences, stated as rules:
 2. Files the index hasn't caught up on (dirty set) are **always appended**
    to the candidate set — a new or modified file can never be silently
    invisible.
-3. If the watcher loses events (inotify queue overflow), the daemon marks
-   itself stale and answers "scan everything" until re-indexed — degraded
-   speed, never degraded truth.
+3. Freshness degradation is a ladder that never reaches "stale": watch
+   overflow drops a root to per-query sweeps; a failed sweep drops the
+   query to a cold scan. Only `frozen` roots trade freshness away, and
+   they do it explicitly and visibly.
 4. Identical output with and without the daemon is a **tested property**,
    not an aspiration (differential tests: daemon vs cold scan, byte-equal).
 
@@ -120,16 +121,42 @@ from rescans into lookups:
   the matched term is, path priors (src > vendor, shallow > deep), and
   mtime recency — the deferred relevance ranking, now with real statistics.
 
-### Change journal
+### Freshness and the change journal
 
-- Recursive inotify (per-directory watches; `max_user_watches` documented,
-  overflow → stale-mode per invariant 3).
-- Every applied change increments the **corpus version**; the journal
-  retains (version, path, kind) for a bounded window.
-- `--changed-since VERSION` returns paths changed after VERSION and the
-  current version — the agent primitive for "search only what moved since
-  I last looked." Version tokens appear in every daemon response, so
-  agents get them for free.
+**Freshness is pull-based by default; watchers are an optimization, not
+architecture.** Every root runs one of three policies (auto-selected,
+overridable at registration):
+
+- **`sweep` (default)**: before the index is used, a parallel stat sweep
+  validates the known file list against the index manifest (size+mtime;
+  directory mtimes catch adds/removes). Divergent and new files join the
+  dirty set that is already appended to every candidate response — the
+  never-lie invariant holds with zero watchers. Cost ~1-2µs/file warm:
+  ~2ms for the books corpus, ~25ms for /usr/include; only monorepo scale
+  (100K+ files) makes sweeps expensive. The daemon caches sweep results
+  briefly (~2s) so query bursts pay one sweep.
+- **`watch`**: inotify replaces the sweep — enabled only when the root's
+  directory count fits the remaining `max_user_watches` budget (watches
+  are per-directory, ~1KB kernel memory each; counted at index time).
+  Overflow or budget pressure degrades the root to `sweep`, never to
+  staleness.
+- **`frozen`**: declared-static corpora (e.g. the books mirror) skip
+  both; the index is trusted until `gogrep index --refresh`. Explicit at
+  registration and surfaced in `stat` output — staleness as a visible
+  choice, never a surprise.
+
+**The journal is source-agnostic**: sweep diffs and watch events feed the
+same (version, path, kind) log; every applied change increments the
+root's **corpus version**. `--changed-since VERSION` therefore works
+identically under all three policies (frozen roots only move on manual
+refresh — the honest semantic). Version tokens ride along on every
+response, so agents hold them for free.
+
+A consequence worth stating: **Phase A plus the sweep policy is a
+complete, correct, daemonless product** (`--use-index` per invocation,
+manual `gogrep index` runs, no watchers anywhere). The daemon adds
+cross-query sweep caching, sessions, the vocabulary service, the watch
+upgrade, and MCP — value, not correctness.
 
 ### Protocol
 
@@ -163,10 +190,12 @@ simply light up when the daemon is present.
 ## Phases (each independently shippable and testable)
 
 **A — Index core, no daemon.** `gogrep index ROOT` builds the cache;
-`--use-index` consumes it in-process. Proves format, planner, and the
-superset property with differential tests (indexed vs cold byte-equal
-output over randomized corpora; property test: candidates ⊇ files with
-matches). This de-risks everything before any long-running process exists.
+`--use-index` consumes it in-process with sweep-validated freshness
+(and `--frozen` to skip sweeps for static corpora). This is already a
+complete correct product. Differential tests (indexed vs cold byte-equal
+output over randomized corpora, including mid-test mutations caught by
+the sweep; property test: candidates ⊇ files with matches) de-risk
+everything before any long-running process exists.
 
 **B — Daemon + transparency.** `gogrep serve`, socket + registry,
 auto-handoff with fallback, inotify journal, staleness contract,
