@@ -7,10 +7,9 @@ budget, they iterate queries rather than page through results, and they
 need machine-verifiable grounding (citations they can re-fetch), not
 scannable prose.
 
-This plan covers the **stateless** features — everything that improves a
-single invocation with no index or daemon. The stateful layer (trigram
-index daemon, sessions, `--changed-since`) is a separate later phase; see
-"Deferred" below.
+This plan covers the per-invocation features. The trigram index
+(`--use-index`, see index.md) shipped separately — daemonless, with
+per-query freshness sweeps.
 
 ## Phase 1 (implemented)
 
@@ -65,7 +64,7 @@ JSON matches now carry `"span": [start, end)` (absolute byte range of the
 line) and a `"region"` id (`path@start-end`). `--get-region` fetches the
 exact bytes for a region id — an agent can cite a span in an answer and
 later re-fetch or verify it without re-reading the file. Region ids are
-self-contained: no index or daemon required.
+self-contained: no index required.
 
 ## Phase 2 (implemented) — precision, scoping, honesty
 
@@ -111,20 +110,20 @@ block, `(?m)` anchors per line). Spans/regions cover the block, so
 multiline citations verify like any other. Unsupported combos (`-P`,
 `-v`, `-t`, `--watch`) rejected at validation.
 
-## Deferred (daemon phase / later)
+## Deferred (later, if ever)
 
-See **indexing-daemon.md** for the full design of this phase.
+Phase 2 absorbed most of the old deferred list (`--changed-since` is
+git-based, near-duplicate collapsing is `--collapse`, basic ranking is
+`--rank density`). Still open:
 
-- **Trigram index daemon** (`agrep serve`) with inotify change journal:
-  millisecond repeated queries, `--changed-since`, sessions/cursors, and
-  a vocabulary that makes `--suggest` free instead of a rescan.
-- **Near-duplicate collapsing**: valuable for vendored/generated code,
-  not for the book corpus driving this phase.
+- **Vocabulary-backed `--suggest`**: variants ranked by true corpus
+  rarity from a token table built during indexing, plus prefix/fragment
+  lookups the rescan approach can't afford.
 - **Deadline + coverage accounting** (`--deadline`): matters at network
   filesystem scale; local corpora finish in well under a second.
-- **Full relevance ranking**: `--outline` count-ranking covers the survey
-  case; rarity/path/recency ranking needs corpus statistics the daemon
-  will own.
+- **Statistical relevance ranking**: `--rank density` covers the common
+  case; IDF/recency ranking needs corpus statistics the index could
+  provide.
 
 ## Design rules
 

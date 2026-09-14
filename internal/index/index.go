@@ -1,6 +1,6 @@
 // Package index implements agrep's daemonless trigram index: a
 // prefilter that shrinks the set of files the real matchers verify,
-// never an answerer (see indexing-daemon.md).
+// never an answerer (see index.md).
 //
 // State lives under $XDG_CACHE_HOME/agrep/<root-id>/ and is maintained
 // entirely by `--use-index` queries: the first builds the index, every

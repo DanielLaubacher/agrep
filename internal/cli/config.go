@@ -75,7 +75,7 @@ type Config struct {
 	GetRegion   string // --get-region: print bytes for a "path@start-end" span
 	ExpandLines int    // --expand N: widen --get-region by N lines each side
 
-	// Index options (see indexing-daemon.md, phase A).
+	// Index options (see index.md).
 	UseIndex   bool   // --use-index: build/use the trigram index for recursive search
 	ClearIndex string // --clear-index PATH: delete index state at/under PATH
 }

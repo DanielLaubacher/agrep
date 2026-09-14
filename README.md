@@ -94,7 +94,7 @@ agrep --use-index -rn 'pattern' ROOT/            # trigram index for repeated qu
                                                  # (auto-fresh; results identical to a cold scan)
 ```
 
-Design and rationale for all of this: [agent-mode.md](agent-mode.md). Index internals: [indexing-daemon.md](indexing-daemon.md).
+Design and rationale for all of this: [agent-mode.md](agent-mode.md). Index internals: [index.md](index.md).
 
 ## Querying a book library (EPUB/PDF → Markdown knowledge base)
 
@@ -135,7 +135,7 @@ agrep wins or ties ripgrep on every workload in its benchmark suite (up to 10.9x
 - [agent-mode.md](agent-mode.md) — agent feature design and rationale
 - [architecture.md](architecture.md) — pipeline, syscalls, SIMD, concurrency, benchmarks
 - [education/](education/) — deep dives on every subsystem
-- [indexing-daemon.md](indexing-daemon.md) — trigram index design
+- [index.md](index.md) — trigram index design (`--use-index`)
 
 ## License
 
