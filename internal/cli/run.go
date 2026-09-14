@@ -33,9 +33,27 @@ const (
 	searchCountOnly                   // count matching lines, skip line extraction
 )
 
+// effectiveMaxCols resolves the display-column limit: 0 means the 75-col
+// default, negative means unlimited.
+func effectiveMaxCols(cfg Config) int {
+	maxCols := cfg.MaxColumns
+	if maxCols == 0 {
+		maxCols = 75
+	}
+	if maxCols < 0 {
+		maxCols = 0
+	}
+	return maxCols
+}
+
 // Run executes the search with the given config.
 // Returns exit code: 0 = match found, 1 = no match, 2 = error.
 func Run(cfg Config) int {
+	// --get-region: fetch bytes for a span id; no search at all.
+	if cfg.GetRegion != "" {
+		return runGetRegion(cfg.GetRegion, output.NewWriter())
+	}
+
 	// Normalize pipelines from legacy fields if needed
 	cfg.NormalizePipelines()
 
@@ -63,35 +81,34 @@ func Run(cfg Config) int {
 		}
 	}
 
-	// Resolve maxCols for matcher
-	maxCols := cfg.MaxColumns
-	if maxCols == 0 {
-		maxCols = 75
-	}
-	if maxCols < 0 {
-		maxCols = 0 // -1 from CLI means no limit
-	}
+	maxCols := effectiveMaxCols(cfg)
 
 	opts := matcher.MatcherOpts{
-		MaxCols:      maxCols,
-		NeedLineNums: cfg.LineNumbers,
+		MaxCols: maxCols,
+		// JSON consumers (agents) always need real line numbers.
+		NeedLineNums: cfg.LineNumbers || cfg.JSONOutput,
 	}
 
-	// Create matcher from pipelines
-	m, err := matcher.NewMatcherFromPipelines(
-		convertPipelines(cfg.Pipelines), cfg.IgnoreCase, cfg.Invert, opts,
-	)
-	if err != nil {
-		logWarn("invalid pattern: %v", err)
-		return 2
-	}
+	// Create matcher from pipelines (--batch builds its own matchers).
+	var m matcher.Matcher
+	onlyMatch := false
+	if cfg.BatchFile == "" {
+		var err error
+		m, err = matcher.NewMatcherFromPipelines(
+			convertPipelines(cfg.Pipelines), cfg.IgnoreCase, cfg.Invert, opts,
+		)
+		if err != nil {
+			logWarn("invalid pattern: %v", err)
+			return 2
+		}
 
-	// Detect if we need only-matched output mode
-	onlyMatch := hasOnlyMatch(m)
+		// Detect if we need only-matched output mode
+		onlyMatch = hasOnlyMatch(m)
 
-	// Wrap with context if needed (not for watch mode — watch handles context via streaming)
-	if !cfg.WatchMode {
-		m = matcher.NewContextMatcher(m, cfg.ContextBefore, cfg.ContextAfter)
+		// Wrap with context if needed (not for watch mode — watch handles context via streaming)
+		if !cfg.WatchMode {
+			m = matcher.NewContextMatcher(m, cfg.ContextBefore, cfg.ContextAfter)
+		}
 	}
 
 	// Determine color mode
@@ -109,9 +126,16 @@ func Run(cfg Config) int {
 	w := output.NewWriter()
 	var formatter output.Formatter
 	if cfg.JSONOutput {
-		formatter = output.NewJSONFormatter()
+		jf := output.NewJSONFormatter()
+		jf.Sections = cfg.Sections
+		formatter = jf
 	} else {
-		formatter = output.NewTextFormatter(cfg.LineNumbers, cfg.CountOnly, cfg.FileNamesOnly, useColor, maxCols, onlyMatch)
+		tf := output.NewTextFormatter(cfg.LineNumbers, cfg.CountOnly, cfg.FileNamesOnly, useColor, maxCols, onlyMatch)
+		tf.Sections = cfg.Sections
+		formatter = tf
+	}
+	if cfg.MaxTokens > 0 {
+		formatter = output.NewBudgetFormatter(formatter, cfg.MaxTokens, cfg.JSONOutput)
 	}
 
 	reader := input.NewAdaptiveReader(cfg.MmapThreshold)
@@ -133,29 +157,50 @@ func Run(cfg Config) int {
 		return runWatch(paths, m, formatter, w, cfg)
 	}
 
-	if readFromStdin {
-		return runStdin(stdinReader, m, formatter, w, cfg.LineNumbers)
+	if cfg.BatchFile != "" {
+		return runBatch(cfg, reader, stdinReader, formatter, w, mode)
 	}
 
-	if cfg.Recursive {
-		return runRecursive(paths, m, reader, formatter, w, cfg, mode)
+	if cfg.Outline && !readFromStdin {
+		return runOutline(paths, m, reader, w, cfg, cfg.JSONOutput)
 	}
 
-	return runFiles(paths, m, reader, formatter, w, mode, cfg.LineNumbers)
+	var exitCode int
+	switch {
+	case readFromStdin:
+		exitCode = runStdin(stdinReader, m, formatter, w, cfg.LineNumbers)
+	case cfg.Recursive:
+		exitCode = runRecursive(paths, m, reader, formatter, w, cfg, mode)
+	default:
+		exitCode = runFiles(paths, m, reader, formatter, w, mode, cfg.LineNumbers)
+	}
+
+	// Zero hits: probe derived variants so the agent's next query is
+	// informed instead of guessed.
+	if exitCode == 1 && cfg.Suggest && !readFromStdin && len(cfg.Patterns) == 1 {
+		runSuggest(cfg.Patterns[0], paths, reader, w, cfg)
+	}
+	return exitCode
 }
 
 func runStdin(reader input.Reader, m matcher.Matcher, formatter output.Formatter, w *output.Writer, lineNums bool) int {
 	result := searchReader(reader, "", m, searchFull, lineNums)
-	if result.HasMatch() {
-		buf := formatter.Format(nil, result, false)
-		if result.Closer != nil {
-			result.Closer()
-		}
-		w.Write(buf)
-		return 0
+	hasMatch := result.HasMatch()
+	var buf []byte
+	if hasMatch {
+		buf = formatter.Format(buf, result, false)
 	}
 	if result.Closer != nil {
 		result.Closer()
+	}
+	if fin, ok := formatter.(output.Finisher); ok {
+		buf = fin.Finish(buf)
+	}
+	if len(buf) > 0 {
+		w.Write(buf)
+	}
+	if hasMatch {
+		return 0
 	}
 	return 1
 }
@@ -182,6 +227,9 @@ func runFiles(paths []string, m matcher.Matcher, reader input.Reader, formatter 
 			w.Write(buf)
 			buf = buf[:0]
 		}
+	}
+	if fin, ok := formatter.(output.Finisher); ok {
+		buf = fin.Finish(buf)
 	}
 	if len(buf) > 0 {
 		w.Write(buf)

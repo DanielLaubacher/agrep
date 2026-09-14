@@ -54,6 +54,15 @@ type Config struct {
 	MaxColumns     int
 	MmapThreshold  int64
 	Paths          []string
+
+	// Agent-oriented options (see agent-mode.md).
+	MaxTokens int    // --max-tokens: output token budget (0 = unlimited)
+	Outline   bool   // --outline: per-file survey instead of match lines
+	TopK      int    // --top: limit outline to the K busiest files
+	Sections  bool   // --sections: annotate matches with Markdown headings
+	BatchFile string // --batch: file of patterns, one per line
+	Suggest   bool   // --suggest: on zero hits, probe derived variants
+	GetRegion string // --get-region: print bytes for a "path@start-end" span
 }
 
 // NormalizePipelines converts legacy Patterns/Fixed/PCRE fields into the
@@ -88,8 +97,14 @@ func (c *Config) NormalizePipelines() {
 
 // Validate checks that the config is valid and returns an error if not.
 func (c *Config) Validate() error {
-	if len(c.Patterns) == 0 && len(c.Pipelines) == 0 {
+	if c.GetRegion != "" {
+		return nil // --get-region needs no pattern
+	}
+	if len(c.Patterns) == 0 && len(c.Pipelines) == 0 && c.BatchFile == "" {
 		return fmt.Errorf("no pattern specified")
+	}
+	if c.BatchFile != "" {
+		return nil // batch patterns are loaded and validated at run time
 	}
 
 	// Validate pipelines if set

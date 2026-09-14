@@ -64,6 +64,99 @@ func (s *Scheduler) Run(files <-chan walker.FileEntry) <-chan output.Result {
 	return resultCh
 }
 
+// RunBatch searches every file with all matchers (reading each file
+// once), emitting one sequence-numbered result per (file, query) so the
+// OrderedWriter can attribute matches to queries deterministically.
+// Empty results are emitted too — sequence numbers must stay contiguous.
+func (s *Scheduler) RunBatch(files <-chan walker.FileEntry, matchers []matcher.Matcher, queries []string) <-chan output.Result {
+	q := len(matchers)
+	resultCh := make(chan output.Result, s.workers*2)
+	var fileSeq atomic.Int64
+
+	var wg sync.WaitGroup
+	for range s.workers {
+		wg.Go(func() {
+			for entry := range files {
+				base := (int(fileSeq.Add(1)) - 1) * q
+				results := s.processFileBatch(entry, matchers, queries)
+				for i := range results {
+					results[i].SeqNum = base + i + 1
+					resultCh <- results[i]
+				}
+			}
+		})
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	return resultCh
+}
+
+// processFileBatch reads entry once and runs every matcher over it. In
+// full mode, results with matches share the file buffer via a
+// reference-counted closer; the buffer is released once the last of them
+// has been formatted.
+func (s *Scheduler) processFileBatch(entry walker.FileEntry, matchers []matcher.Matcher, queries []string) []output.Result {
+	results := make([]output.Result, len(matchers))
+	for i := range results {
+		results[i] = output.Result{FilePath: entry.Path, Query: queries[i]}
+	}
+
+	readResult, err := s.reader.Read(entry.Path)
+	if err != nil {
+		results[0].Err = err
+		return results
+	}
+	closeReader := func() {
+		if readResult.Closer != nil {
+			readResult.Closer()
+		}
+	}
+
+	if readResult.Data == nil || walker.IsBinary(readResult.Data) {
+		closeReader()
+		return results
+	}
+
+	holders := 0
+	for i, m := range matchers {
+		switch {
+		case s.filesOnly:
+			if m.MatchExists(readResult.Data) {
+				results[i].MatchSet = matcher.MatchSet{Matches: []matcher.Match{{}}}
+			}
+		case s.countOnly:
+			results[i].MatchCount = m.CountAll(readResult.Data)
+		default:
+			results[i].MatchSet = m.FindAll(readResult.Data)
+			if results[i].MatchSet.HasMatch() {
+				holders++
+			}
+		}
+	}
+
+	if holders == 0 {
+		closeReader()
+		return results
+	}
+	var remaining atomic.Int32
+	remaining.Store(int32(holders))
+	shared := func() {
+		if remaining.Add(-1) == 0 {
+			closeReader()
+		}
+	}
+	for i := range results {
+		if results[i].MatchSet.HasMatch() && !s.filesOnly && !s.countOnly {
+			results[i].Closer = shared
+		}
+	}
+	return results
+}
+
 func (s *Scheduler) processFile(entry walker.FileEntry) output.Result {
 	result := output.Result{FilePath: entry.Path}
 

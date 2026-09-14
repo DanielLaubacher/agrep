@@ -7,6 +7,9 @@ type Result struct {
 	FilePath string
 	SeqNum   int
 	MatchSet matcher.MatchSet
+	// Query names the batch query that produced this result (--batch);
+	// empty for single-query searches.
+	Query string
 	// MatchCount holds the count for -c mode without building Match structs.
 	// When set to 0 (default), len(MatchSet.Matches) is used instead.
 	MatchCount int

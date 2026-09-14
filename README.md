@@ -128,6 +128,15 @@ make build
 ./bin/gogrep -rn 'ERROR.*timeout' /var/log
 ```
 
+## Agent mode
+
+gogrep is purpose-built to serve AI agents as a sensing API: output token
+budgets (`--max-tokens`), corpus surveys (`--outline --top K`), Markdown
+section context (`--sections`), one-pass multi-query execution
+(`--batch`), zero-hit variant guidance (`--suggest`), and verifiable
+citation spans (`--json` + `--get-region`). See
+[agent-mode.md](agent-mode.md) for the design and examples.
+
 ## Architecture
 
 See [architecture.md](architecture.md) for detailed design documentation covering the pipeline, syscall usage, SIMD algorithms, concurrency model, and key constants. The `education/` directory contains in-depth writeups of every subsystem and the ripgrep-gap optimization campaign.

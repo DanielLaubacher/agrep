@@ -88,6 +88,9 @@ func (ow *OrderedWriter) WriteOrdered(results <-chan Result, onMatch func()) {
 		}
 	}
 
+	if fin, ok := ow.formatter.(Finisher); ok {
+		out = fin.Finish(out)
+	}
 	if len(out) > 0 {
 		ow.writer.Write(out)
 	}

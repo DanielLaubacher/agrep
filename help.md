@@ -286,3 +286,28 @@ gogrep automatically detects binary files (by checking for NUL bytes in the firs
 gogrep -r "magic" ./data/
 # Binary file ./data/archive.bin matches
 ```
+
+## Agent options
+
+Designed for AI agents using gogrep as a sensing API (see agent-mode.md):
+
+| Flag | Description |
+|---|---|
+| `--max-tokens N` | Budget output to ~N tokens (4 bytes/token heuristic). Search always completes; a trailer reports exactly what was omitted. |
+| `--outline` | Per-file survey: `count TAB path TAB first-matching-line`, busiest files first. |
+| `--top K` | Limit `--outline` to the K busiest files. |
+| `--sections` | Annotate matches with the enclosing Markdown heading (`§` group lines in text, `"section"` field in JSON). |
+| `--batch FILE` | Run every pattern in FILE (one per line, `#` comments) in a single pass; each file is read once. Results carry their query (`[pattern]` prefix / `"query"` field). |
+| `--suggest` | On zero hits, probe the case-insensitive form and identifier fragments of the pattern; report which occur and where. |
+| `--get-region PATH@START-END` | Print the exact bytes of a span id (as emitted in JSON `"region"`). Lets an agent re-fetch or verify a citation without re-reading the file. |
+
+JSON output (`--json`) always includes real line numbers, plus `"span"`
+(absolute byte range of the line) and `"region"` (a self-contained id for
+`--get-region`).
+
+Example agent workflow over a book corpus:
+
+    gogrep --outline --top 10 -r 'backoff' ./books_text/     # who covers it
+    gogrep --sections -rn --max-tokens 2000 'backoff' ./books_text/Manning/
+    gogrep --batch probes.txt --json -r ./books_text/        # expanded concept
+    gogrep --get-region 'books_text/Manning/x.md@3120-3245'  # verify a citation

@@ -41,6 +41,15 @@ Options:
       --watch              Watch files for changes and search new content
   -h, --help               Show this help
 
+Agent options (see agent-mode.md):
+      --max-tokens N       Budget output to ~N tokens; report what was omitted
+      --outline            Per-file survey (count + first match), busiest first
+      --top K              Limit --outline to the K busiest files
+      --sections           Annotate matches with their Markdown section heading
+      --batch FILE         Run all patterns in FILE (one per line) in one pass
+      --suggest            On zero hits, probe derived variants and report counts
+      --get-region SPAN    Print exact bytes for a "path@start-end" span id
+
 Pipeline:
   Flags -F, -P, -t, -o are per-stage modifiers that apply to the next -e.
   Use -t to pipe matched text from one pattern into the next (match narrowing).
@@ -229,6 +238,36 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 				die("flag %s requires a value", key)
 			}
 			prof.cpu = v
+		case "--max-tokens":
+			v, ok := nextVal()
+			if !ok {
+				die("flag %s requires a value", key)
+			}
+			cfg.MaxTokens = atoi(v, key)
+		case "--outline":
+			cfg.Outline = true
+		case "--top":
+			v, ok := nextVal()
+			if !ok {
+				die("flag %s requires a value", key)
+			}
+			cfg.TopK = atoi(v, key)
+		case "--sections":
+			cfg.Sections = true
+		case "--batch":
+			v, ok := nextVal()
+			if !ok {
+				die("flag %s requires a value", key)
+			}
+			cfg.BatchFile = v
+		case "--suggest":
+			cfg.Suggest = true
+		case "--get-region":
+			v, ok := nextVal()
+			if !ok {
+				die("flag %s requires a value", key)
+			}
+			cfg.GetRegion = v
 		case "--memprofile":
 			v, ok := nextVal()
 			if !ok {
@@ -260,8 +299,12 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 		os.Exit(0)
 	}
 
-	// Parse positional args: first arg is pattern (if -e not used), rest are files
-	if !explicitE {
+	// Parse positional args: first arg is pattern (if -e not used), rest are files.
+	// --get-region and --batch supply their own work, so no pattern is required
+	// and every positional is a path.
+	if cfg.GetRegion != "" || cfg.BatchFile != "" {
+		cfg.Paths = positional
+	} else if !explicitE {
 		if len(positional) == 0 {
 			fmt.Print(usage)
 			os.Exit(0)

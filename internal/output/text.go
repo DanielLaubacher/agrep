@@ -17,6 +17,12 @@ type TextFormatter struct {
 	useColor    bool
 	maxColumns  int
 	onlyMatch   bool // -o: output only matched text
+
+	// Sections prints a "§ <heading>" group line whenever the enclosing
+	// Markdown heading of the printed matches changes (--sections).
+	Sections    bool
+	lastSection string
+	lastFile    string
 }
 
 // NewTextFormatter creates a TextFormatter.
@@ -34,6 +40,11 @@ func NewTextFormatter(lineNumbers bool, countOnly bool, filesOnly bool, useColor
 func (f *TextFormatter) Format(buf []byte, result Result, multiFile bool) []byte {
 	if f.filesOnly {
 		if result.HasMatch() {
+			if result.Query != "" {
+				buf = append(buf, '[')
+				buf = append(buf, result.Query...)
+				buf = append(buf, "] "...)
+			}
 			buf = append(buf, result.FilePath...)
 			buf = append(buf, '\n')
 			return buf
@@ -45,6 +56,11 @@ func (f *TextFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 		count := result.Count()
 		if count == 0 {
 			return buf
+		}
+		if result.Query != "" {
+			buf = append(buf, '[')
+			buf = append(buf, result.Query...)
+			buf = append(buf, "] "...)
 		}
 		if multiFile {
 			buf = append(buf, result.FilePath...)
@@ -62,13 +78,45 @@ func (f *TextFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 		}
 	} else {
 		for i := range ms.Matches {
-			buf = f.formatMatch(buf, result.FilePath, ms, i, multiFile)
+			if f.Sections {
+				buf = f.formatSectionLine(buf, result.FilePath, ms, i)
+			}
+			buf = f.formatMatch(buf, result.FilePath, result.Query, ms, i, multiFile)
 		}
 	}
 	return buf
 }
 
-func (f *TextFormatter) formatMatch(buf []byte, filePath string, ms *matcher.MatchSet, idx int, multiFile bool) []byte {
+// formatSectionLine emits a "§ heading" group line when the enclosing
+// Markdown section of the match differs from the previously printed one.
+func (f *TextFormatter) formatSectionLine(buf []byte, filePath string, ms *matcher.MatchSet, idx int) []byte {
+	m := &ms.Matches[idx]
+	if m.LineStart < 0 || m.IsContext {
+		return buf
+	}
+	h := sectionHeading(ms.Data, m.LineStart)
+	if h == nil {
+		return buf
+	}
+	sec := string(h)
+	if sec == f.lastSection && filePath == f.lastFile {
+		return buf
+	}
+	f.lastSection = sec
+	f.lastFile = filePath
+	if f.useColor {
+		buf = append(buf, ansiCyan...)
+	}
+	buf = append(buf, "§ "...)
+	buf = append(buf, sec...)
+	if f.useColor {
+		buf = append(buf, ansiReset...)
+	}
+	buf = append(buf, '\n')
+	return buf
+}
+
+func (f *TextFormatter) formatMatch(buf []byte, filePath string, query string, ms *matcher.MatchSet, idx int, multiFile bool) []byte {
 	m := &ms.Matches[idx]
 
 	// Resolve line bytes: separator sentinel or normal line
@@ -83,6 +131,13 @@ func (f *TextFormatter) formatMatch(buf []byte, filePath string, ms *matcher.Mat
 	sep := ":"
 	if m.IsContext {
 		sep = "-"
+	}
+
+	// Batch query attribution
+	if query != "" {
+		buf = append(buf, '[')
+		buf = append(buf, query...)
+		buf = append(buf, "] "...)
 	}
 
 	// Filename prefix
