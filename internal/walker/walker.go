@@ -408,6 +408,11 @@ func (pw *parallelWalker) isGlobExcluded(name string) bool {
 // matchGlob matches a name against a glob pattern.
 // Supports brace expansion for {a,b,c} patterns.
 func matchGlob(pattern, name string) bool {
+	// Fast path: patterns with no metacharacters (e.g. "!.git" exclusions
+	// from config files) are exact-name comparisons — skip filepath.Match.
+	if !strings.ContainsAny(pattern, `*?[{\`) {
+		return pattern == name
+	}
 	// Handle brace expansion: {a,b,c} → try each alternative
 	if i := strings.IndexByte(pattern, '{'); i >= 0 {
 		if j := strings.IndexByte(pattern[i:], '}'); j >= 0 {

@@ -50,13 +50,18 @@ func NewOrderedWriter(w *Writer, f Formatter, multiFile bool) *OrderedWriter {
 	}
 }
 
+// flushThreshold is the accumulated-output size that triggers a writev.
+// Batching many small per-file results into one syscall matters on
+// output-heavy recursive searches (tens of thousands of matching files).
+const flushThreshold = 256 * 1024
+
 // WriteOrdered consumes results from the channel, buffering out-of-order results
-// and writing them in sequence-number order. Reuses a single format buffer
-// across all writes to avoid per-file allocation.
+// and writing them in sequence-number order. Formatted output accumulates in a
+// single reused buffer and is flushed in large batches to minimize syscalls.
 func (ow *OrderedWriter) WriteOrdered(results <-chan Result, onMatch func()) {
 	nextSeq := 1
 	pending := make(map[int]Result)
-	var buf []byte // reused across all writeResult calls
+	var out []byte // accumulated formatted output, flushed in batches
 
 	for r := range results {
 		if r.Err == nil && r.HasMatch() {
@@ -66,12 +71,12 @@ func (ow *OrderedWriter) WriteOrdered(results <-chan Result, onMatch func()) {
 		}
 
 		if r.SeqNum == nextSeq {
-			buf = ow.writeResult(buf, r)
+			out = ow.writeResult(out, r)
 			nextSeq++
 			// Flush any consecutive pending results
 			for {
 				if p, ok := pending[nextSeq]; ok {
-					buf = ow.writeResult(buf, p)
+					out = ow.writeResult(out, p)
 					delete(pending, nextSeq)
 					nextSeq++
 				} else {
@@ -82,19 +87,26 @@ func (ow *OrderedWriter) WriteOrdered(results <-chan Result, onMatch func()) {
 			pending[r.SeqNum] = r
 		}
 	}
+
+	if len(out) > 0 {
+		ow.writer.Write(out)
+	}
 }
 
-func (ow *OrderedWriter) writeResult(buf []byte, r Result) []byte {
+func (ow *OrderedWriter) writeResult(out []byte, r Result) []byte {
 	if r.Err != nil {
 		if r.Closer != nil {
 			r.Closer()
 		}
-		return buf
+		return out
 	}
-	buf = ow.formatter.Format(buf[:0], r, ow.multiFile)
+	out = ow.formatter.Format(out, r, ow.multiFile)
 	if r.Closer != nil {
 		r.Closer()
 	}
-	ow.writer.Write(buf)
-	return buf
+	if len(out) >= flushThreshold {
+		ow.writer.Write(out)
+		out = out[:0]
+	}
+	return out
 }
