@@ -11,7 +11,8 @@ package output
 
 import (
 	"bytes"
-	"strings"
+
+	"github.com/DanielLaubacher/agrep/internal/lang"
 )
 
 // scopeScanLimit bounds how far back enclosingScope searches. Applied
@@ -22,12 +23,26 @@ const scopeScanLimit = 64 * 1024
 // lineStart, or nil if none is found. path selects the language family;
 // Markdown routes to sectionHeading.
 func enclosingScope(data []byte, lineStart int, path string) []byte {
-	fam := langFamily(path)
+	if s, _, ok := enclosingScopeAt(data, lineStart, path); ok {
+		return s
+	}
+	return nil
+}
+
+// enclosingScopeAt additionally returns the byte offset of the
+// definition (or heading) line, for callers that need the block start
+// (--block).
+func enclosingScopeAt(data []byte, lineStart int, path string) ([]byte, int, bool) {
+	fam := lang.ByPath(path)
 	switch fam {
-	case famMarkdown:
-		return sectionHeading(data, lineStart)
-	case famNone:
-		return nil
+	case lang.Markdown:
+		h, off := sectionHeadingAt(data, lineStart)
+		if h == nil {
+			return nil, 0, false
+		}
+		return h, off, true
+	case lang.Generic:
+		return nil, 0, false
 	}
 
 	if lineStart > len(data) {
@@ -54,22 +69,22 @@ func enclosingScope(data []byte, lineStart int, path string) []byte {
 				// The match's own line: a definition is its own scope,
 				// and a top-level non-definition has no enclosing one.
 				if isDefLine(trimmed, fam) {
-					return bytes.TrimRight(trimmed, " \t\r{")
+					return bytes.TrimRight(trimmed, " \t\r{"), cur, true
 				}
 				if ind == 0 {
-					return nil
+					return nil, 0, false
 				}
 				minIndent = ind
 			} else if ind < minIndent {
 				if isDefLine(trimmed, fam) {
-					return bytes.TrimRight(trimmed, " \t\r{")
+					return bytes.TrimRight(trimmed, " \t\r{"), cur, true
 				}
 				minIndent = ind
 				if minIndent == 0 {
 					// A top-level non-definition line above the match
 					// (e.g. a closing brace): the match is not inside
 					// any definition.
-					return nil
+					return nil, 0, false
 				}
 			}
 			first = false
@@ -80,7 +95,7 @@ func enclosingScope(data []byte, lineStart int, path string) []byte {
 		}
 
 		if cur <= lo {
-			return nil
+			return nil, 0, false
 		}
 		if i := bytes.LastIndexByte(data[lo:cur-1], '\n'); i >= 0 {
 			cur = lo + i + 1
@@ -117,47 +132,6 @@ func isCommentLine(trimmed []byte) bool {
 	return false
 }
 
-type family int
-
-const (
-	famNone family = iota
-	famMarkdown
-	famGo
-	famPython
-	famRust
-	famJS
-	famC
-	famShell
-	famRuby
-)
-
-// langFamily maps a file extension to its definition-line dialect.
-func langFamily(path string) family {
-	dot := strings.LastIndexByte(path, '.')
-	if dot < 0 {
-		return famNone
-	}
-	switch path[dot+1:] {
-	case "md", "markdown":
-		return famMarkdown
-	case "go":
-		return famGo
-	case "py", "pyi":
-		return famPython
-	case "rs":
-		return famRust
-	case "js", "jsx", "ts", "tsx", "mjs", "cjs":
-		return famJS
-	case "c", "h", "cc", "cpp", "hpp", "cxx", "java", "kt", "cs", "scala":
-		return famC
-	case "sh", "bash", "zsh":
-		return famShell
-	case "rb":
-		return famRuby
-	}
-	return famNone
-}
-
 // hasPrefixWord reports whether trimmed starts with word followed by a
 // non-identifier byte (so "func" doesn't match "function_table").
 func hasPrefixWord(trimmed []byte, word string) bool {
@@ -175,14 +149,14 @@ var cControlWords = []string{"if", "for", "while", "switch", "return", "else", "
 
 // isDefLine reports whether a trimmed significant line looks like a
 // definition in the given language family.
-func isDefLine(trimmed []byte, fam family) bool {
+func isDefLine(trimmed []byte, fam lang.Lang) bool {
 	switch fam {
-	case famGo:
+	case lang.Go:
 		return hasPrefixWord(trimmed, "func") || hasPrefixWord(trimmed, "type")
-	case famPython:
+	case lang.Python:
 		return hasPrefixWord(trimmed, "def") || hasPrefixWord(trimmed, "class") ||
 			(hasPrefixWord(trimmed, "async") && hasPrefixWord(bytes.TrimLeft(trimmed[5:], " \t"), "def"))
-	case famRust:
+	case lang.Rust:
 		t := trimmed
 		for _, kw := range []string{"pub(crate)", "pub", "unsafe", "async", "const", "extern"} {
 			if hasPrefixWord(t, kw) {
@@ -195,7 +169,7 @@ func isDefLine(trimmed []byte, fam family) bool {
 			}
 		}
 		return false
-	case famJS:
+	case lang.JS:
 		t := trimmed
 		for _, kw := range []string{"export", "default", "public", "private", "protected", "static", "abstract", "async"} {
 			if hasPrefixWord(t, kw) {
@@ -212,7 +186,7 @@ func isDefLine(trimmed []byte, fam family) bool {
 			return bytes.Contains(t, []byte("=>")) || bytes.Contains(t, []byte("function"))
 		}
 		return false
-	case famC:
+	case lang.C:
 		c := trimmed[0]
 		if !(c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
 			return false
@@ -230,9 +204,9 @@ func isDefLine(trimmed []byte, fam family) bool {
 		// Function-shaped: has a paren and is not a bare call statement
 		// (heuristic: definitions don't end with ';').
 		return bytes.IndexByte(trimmed, '(') > 0 && trimmed[len(trimmed)-1] != ';'
-	case famShell:
+	case lang.Shell:
 		return hasPrefixWord(trimmed, "function") || bytes.Contains(trimmed, []byte("() {"))
-	case famRuby:
+	case lang.Ruby:
 		return hasPrefixWord(trimmed, "def") || hasPrefixWord(trimmed, "class") || hasPrefixWord(trimmed, "module")
 	}
 	return false

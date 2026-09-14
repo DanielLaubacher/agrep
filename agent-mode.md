@@ -110,6 +110,40 @@ block, `(?m)` anchors per line). Spans/regions cover the block, so
 multiline citations verify like any other. Unsupported combos (`-P`,
 `-v`, `-t`, `--watch`) rejected at validation.
 
+## Phase 3 — structural sensing (comby lineage, not AST lineage)
+
+Analysis of semgrep/ast-grep/comby (TODO.md) settled the direction:
+adopt comby's insight — structural matching needs only balanced
+delimiters, strings, and comments, not parsers — and reject the
+tree-sitter/AST path (per-language grammar treadmill, violates pure-Go,
+duplicates agents' LSP tools). Three features, sharing one small
+language-family table (`internal/lang`):
+
+### 14. Structural holes — `-S 'foo(:[args])'`
+The pattern is a template: literal text plus `:[name]` holes. A hole
+matches lazily across lines within balanced delimiters, skipping string
+and comment contents (per `--lang`, default `generic` = delimiters
+only). Whitespace in the pattern matches any whitespace run. One probe
+answers "call sites of foo and what gets passed" — multi-line calls
+included — which previously took several regex round-trips. Matches are
+block-spanning (like `-U`) with working span/region citations.
+
+### 15. Capture bindings — `"captures"` + `--capture`
+Every hole's text is captured and emitted in JSON
+(`"captures":{"args":"ctx, retry"}`), and `--histogram --capture args`
+aggregates a hole's values across the corpus: "histogram of the first
+argument to NewClient(...)" is one command returning tens of tokens
+instead of hundreds of match lines to tabulate by hand.
+
+### 16. Whole-block output — `--block`
+Each match is emitted as its whole enclosing definition block (backward
+scope scan to the definition line, forward balance/indent/heading scan
+to its end; Markdown blocks run heading→next heading). Replaces the
+agent's `--get-region --expand` guess-loop with one exact fetch; the
+span/region covers exactly the emitted block, and multiple matches in
+one block dedupe to a single emission. Capped at 32KB with an explicit
+truncation flag.
+
 ## Deferred (later, if ever)
 
 Phase 2 absorbed most of the old deferred list (`--changed-since` is

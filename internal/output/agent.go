@@ -18,6 +18,13 @@ const sectionScanLimit = 64 * 1024
 // at or before lineStart in data, or nil if none is found within the scan
 // window.
 func sectionHeading(data []byte, lineStart int) []byte {
+	h, _ := sectionHeadingAt(data, lineStart)
+	return h
+}
+
+// sectionHeadingAt additionally returns the heading line's byte offset,
+// for callers that need the section start (--block).
+func sectionHeadingAt(data []byte, lineStart int) ([]byte, int) {
 	if lineStart > len(data) {
 		lineStart = len(data)
 	}
@@ -34,10 +41,10 @@ func sectionHeading(data []byte, lineStart int) []byte {
 			for lineEnd < len(data) && data[lineEnd] != '\n' {
 				lineEnd++
 			}
-			return bytes.TrimRight(data[cur:lineEnd], " \t\r")
+			return bytes.TrimRight(data[cur:lineEnd], " \t\r"), cur
 		}
 		if cur <= lo {
-			return nil
+			return nil, 0
 		}
 		if i := bytes.LastIndexByte(data[lo:cur-1], '\n'); i >= 0 {
 			cur = lo + i + 1
