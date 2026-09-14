@@ -10,6 +10,21 @@ agrep is a Linux-only, high-performance grep alternative written in pure Go. Eve
 4. **Zero allocations on hot paths** -- `[]byte` everywhere, `sync.Pool` for buffers, no `string` conversions during search.
 5. **Pure Go, no cgo** -- no C bindings. PCRE2 support comes from a pure Go port (`go.elara.ws/pcre`), SIMD from `simd/archsimd`.
 
+## Feature Summary
+
+- **AVX2 SIMD search** — fixed-string patterns use a SIMD-friendly Horspool algorithm that compares 32 byte positions per iteration
+- **Search-then-split** — searches the entire file buffer first, then extracts line boundaries only around matches (avoids per-line overhead)
+- **Memory-mapped I/O** — large files are mmap'd with `MADV_SEQUENTIAL` + `FADV_SEQUENTIAL` for zero-copy search (demand-paged, no `MAP_POPULATE`, enabling early exit for `-l` mode)
+- **Raw syscalls** — `getdents64`, `open`, `pread`, `mmap`, `writev`, `inotify`, `epoll` — no portable Go abstractions
+- **Multiple pattern engines** — custom lazy-DFA regex engine with SIMD prefilters, Boyer-Moore with SIMD, rare-pair Teddy multi-pattern (2-8 fixed patterns), Aho-Corasick for larger sets, optional PCRE2 (pure Go port, `make build-pcre`)
+- **Parallel everywhere** — recursive searches fan out across a worker pool (`NumCPU * 2` goroutines, deterministic output ordering), and large single files are searched in parallel line-aligned chunks
+- **Regex pipeline** (`-t`/`-o`) — chain patterns with different engines; SIMD fixed-string stages eliminate lines before expensive regex runs
+- **Multi-literal prefilter** — regex AST analysis extracts all required literals for cascaded SIMD rejection before the regex engine runs
+- **Watch mode** — inotify + epoll file watching with log rotation handling
+- **Agent mode** — token budgets, corpus surveys, batch multi-query, verifiable citation spans, trigram index (see [agent-mode.md](agent-mode.md))
+- **JSON output** — JSON Lines format for programmatic consumption
+- **Pure Go, no cgo** — no C bindings or assembly files
+
 ## Pipeline
 
 ```
@@ -338,6 +353,32 @@ and `education/11-beating-ripgrep.md`. Reproducible micro-benchmarks:
 `internal/output/pipeline_bench_test.go` (staged match→format pipeline),
 `internal/simd/teddy_test.go` and `internal/matcher/teddy_test.go`
 (Teddy vs Aho-Corasick), plus `make bench`.
+
+## Building & Development
+
+Requirements: **Go 1.26+** with `GOEXPERIMENT=simd`, **Linux AMD64** (x86-64 with AVX2 — Intel Haswell+ or AMD Excavator+), `golang.org/x/sys` for syscall bindings.
+
+```sh
+# Build (Makefile sets GOEXPERIMENT=simd automatically)
+make build            # → bin/agrep
+make build-pcre       # → bin/agrep-pcre with -P support (see Dependencies)
+GOEXPERIMENT=simd go build -o bin/agrep ./cmd/agrep   # equivalent
+
+# Install
+make install          # or: GOEXPERIMENT=simd go install github.com/DanielLaubacher/agrep/cmd/agrep@latest
+
+# Test — PCRE tests run separately because modernc.org/libc crashes under -race
+make test
+
+# Benchmarks (matchers, input, SIMD primitives; compared against bytes.Index baselines)
+make bench
+
+# Profile against ripgrep
+make profile
+
+# Lint
+make lint
+```
 
 ## Dependencies
 
