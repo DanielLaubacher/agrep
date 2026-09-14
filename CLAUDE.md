@@ -6,8 +6,9 @@ Linux-only, high-performance grep alternative in Go with AVX2 SIMD acceleration.
 
 Requires Go 1.26+ with `GOEXPERIMENT=simd` (set automatically by Makefile).
 
-- `make build` — build to `bin/gogrep`
-- `make test` — `go test -race ./...` (skips PCRE under race) + PCRE tests separately
+- `make build` — build to `bin/gogrep` (no PCRE: `-P` is stubbed out to avoid a ~5ms/invocation startup tax from modernc.org/libc's /etc/services-parsing init)
+- `make build-pcre` — build `bin/gogrep-pcre` with `-tags pcre` (full `-P` support)
+- `make test` — `go test -race ./...` (skips PCRE under race) + PCRE tests separately (`-tags pcre`)
 - `make bench` — run benchmarks (matchers, input, SIMD)
 - `make lint` — `go vet ./...`
 - `GOEXPERIMENT=simd go test -race ./internal/matcher/` — test just matchers

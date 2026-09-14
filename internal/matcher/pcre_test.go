@@ -1,3 +1,5 @@
+//go:build pcre
+
 package matcher
 
 import (
