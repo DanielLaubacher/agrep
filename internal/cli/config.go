@@ -59,7 +59,8 @@ type Config struct {
 	Ident     bool   // --ident: match all case conventions of an identifier, word-bounded
 	MaxTokens int    // --max-tokens: output token budget (0 = unlimited)
 	Outline   bool   // --outline: per-file survey instead of match lines
-	TopK      int    // --top: limit outline to the K busiest files
+	Histogram bool   // --histogram: distinct matched texts with counts
+	TopK      int    // --top: limit outline/histogram to the K busiest entries
 	Sections  bool   // --sections: annotate matches with Markdown headings
 	Scope     bool   // --scope: annotate matches with the enclosing definition
 	BatchFile string // --batch: file of patterns, one per line

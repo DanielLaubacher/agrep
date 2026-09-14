@@ -46,7 +46,9 @@ Agent options (see agent-mode.md):
                            conventions (camel/snake/kebab/SCREAMING), word-bounded
       --max-tokens N       Budget output to ~N tokens; report what was omitted
       --outline            Per-file survey (count + exemplar line), busiest first
-      --top K              Limit --outline to the K busiest files
+      --top K              Limit --outline/--histogram to the K busiest entries
+      --histogram          Count distinct matched texts (uniq -c built in);
+                           composes with -o pipelines
       --sections           Annotate matches with their Markdown section heading
       --scope              Annotate matches with their enclosing definition
                            (func/class/def by language; headings in Markdown)
@@ -259,6 +261,8 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			cfg.MaxTokens = atoi(v, key)
 		case "--outline":
 			cfg.Outline = true
+		case "--histogram":
+			cfg.Histogram = true
 		case "--top":
 			v, ok := nextVal()
 			if !ok {

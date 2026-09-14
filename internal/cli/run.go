@@ -98,6 +98,11 @@ func Run(cfg Config) int {
 		// JSON consumers (agents) always need real line numbers.
 		NeedLineNums: cfg.LineNumbers || cfg.JSONOutput,
 	}
+	// Histogram counts matched spans — never truncate the lines they
+	// live in.
+	if cfg.Histogram {
+		opts.MaxCols = 0
+	}
 
 	// Create matcher from pipelines (--batch builds its own matchers).
 	var m matcher.Matcher
@@ -177,6 +182,10 @@ func Run(cfg Config) int {
 
 	if cfg.Outline && !readFromStdin {
 		return runOutline(paths, m, reader, w, cfg, cfg.JSONOutput)
+	}
+
+	if cfg.Histogram {
+		return runHistogram(paths, m, reader, stdinReader, w, cfg)
 	}
 
 	var exitCode int
