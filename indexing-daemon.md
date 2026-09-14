@@ -53,6 +53,19 @@ gogrep serve  (ONE daemon per user — watchman model — hosting many roots)
   adoption indexes a new root in the background after its first (cold)
   search. In phase D this also yields a single MCP endpoint spanning
   every corpus.
+- **The root table is a partition — never overlapping coverage.** Every
+  file is indexed by exactly one root, preserved by three registration
+  rules: re-adding an existing root is an idempotent no-op (at most a
+  freshness sweep); adding a path already inside a root's coverage
+  creates an **alias** (no new index — resolution already routes there);
+  adding a **parent** of existing roots absorbs them — the children's
+  segments are adopted as-is via a path-prefix stamp (segments are
+  relocatable: each carries its own file table of root-relative paths
+  plus a prefix field), their inotify watches transfer, only the
+  genuinely uncovered remainder is indexed, and the retired child roots
+  become aliases. Tokens issued against an absorbed root are answered
+  with an explicit redirect ("absorbed into <root>; current version
+  <root>:<v>"), never an error or a wrong answer.
 - **Root-scoped tokens**: corpus versions, `--changed-since` cursors, and
   session ids are all namespaced `<root-id>:<value>`; the daemon rejects
   tokens presented against the wrong root rather than answering nonsense.
@@ -82,6 +95,12 @@ Google-Code-Search lineage, zoekt-style segments:
   with no extractable trigrams (pure classes like `[0-9][a-z]`) get plan
   "all files" — the daemon still saves the directory walk, and Cox-style
   regex→trigram AND/OR trees are a later refinement, not a blocker.
+- **Segments are relocatable**: each segment stores a segment-local file
+  table (root-relative paths) and a mount-prefix field, so a segment can
+  be adopted under a new root by stamping a prefix — no rebuild. This is
+  what makes parent-root absorption free, and it simplifies background
+  merges and quarantine as a side effect. Required from the first format
+  version (cheap now, painful to retrofit).
 - Incremental updates are segment-based: changed files get tombstoned and
   re-indexed into fresh segments; background merge compacts. Readers work
   on an immutable epoch snapshot (swap pointer, no locks in the query path
@@ -122,7 +141,8 @@ output ethos; trivially debuggable with `nc`):
 - `vocab {fragment, limit} → {terms: [{t, files, lines}]}`
 - `session.open {plan} / session.next {id, cursor} / session.refine {id, plan}`
 - `resolve {path} → {root, version} | {uncovered}`
-- `roots.add {path} / roots.list {}`
+- `roots.add {path} → {root} | {alias-of} | {absorbed: [children]}`
+- `roots.list {} → [{root, version, aliases, state}]`
 - `stat {root?} → {version, files, segments, dirty, mem}`
 
 The client sends *plans* (extracted literals/trigrams + flags), not raw
