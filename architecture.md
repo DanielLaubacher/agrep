@@ -103,9 +103,10 @@ type Matcher interface {
 
 | Condition | Matcher | Engine |
 |---|---|---|
-| `-P` (PCRE) | `PCREMatcher` | `go.elara.ws/pcre` (pure Go PCRE2 port) |
+| `-P` (PCRE) | `PCREMatcher` | `go.elara.ws/pcre` (pure Go PCRE2 port; `pcre` build tag only — see Dependencies) |
 | `-F` + 1 pattern | `BoyerMooreMatcher` | `bytes.Index` (stdlib AVX2 asm); case-insensitive uses custom SIMD Horspool |
-| `-F` + N patterns | `AhoCorasickMatcher` | Hand-written trie with `[256]*node` children + BFS failure links |
+| `-F` + 2..8 patterns | `TeddyMatcher` | Rare-pair Teddy: nibble-PSHUFB SIMD prefilter probing the set's two rarest byte positions (~11x faster than the AC trie) |
+| `-F` + >8 patterns | `AhoCorasickMatcher` | Hand-written trie with `[256]*node` children + BFS failure links |
 | Literal pattern (no metacharacters) | `BoyerMooreMatcher` / `AhoCorasickMatcher` | Auto-promoted from regex to fixed-string search |
 | Default (regex) | `RegexMatcher` | Go stdlib `regexp` (RE2) with multi-literal SIMD prefilter |
 | `-t` pipeline | `PipelineMatcher` | Chains any of the above; stages filter lines in AND sequence |
@@ -137,6 +138,28 @@ gogrep -Fe 'ERROR' -Fte 'timeout' -toe '\d+' app.log
 
 **Performance:** When all stages are fixed strings (`-F`), the pipeline uses only SIMD search — no regex engine at all. This can outperform ripgrep on ultra-sparse multi-condition searches (measured 1.14x faster at 0.1% hit rate).
 
+### Custom Regex Engine (internal/regex)
+
+Non-literal patterns compile to a hand-rolled lazy-DFA engine (see
+`education/10-closing-the-ripgrep-gap.md`). Key properties:
+
+- **Compile-time precomputation**: every reachable DFA transition is computed
+  eagerly at `Compile` time (BFS over states), so match paths are read-only
+  and one `Regexp` is safe to share across all scheduler workers. On
+  state-cache overflow the engine falls back to the PikeVM (allocates per
+  call, also safe). Precomputation runs once per **byte equivalence class**
+  (typically 5-20 classes, not 256 bytes), keeping compile cost microseconds.
+- **Prefix-anchored verify**: when the extracted primary literal begins every
+  match (e.g. `ERROR` in `ERROR.*port [0-9]+`), candidates from the SIMD
+  literal scan are verified by running the DFA anchored at the hit — no line
+  extraction, no re-scanning from every plausible start byte.
+- **Rare-byte windowed verify**: when only a rare byte is extractable (e.g.
+  `@` in an email pattern), each hit is verified inside the maximal run of
+  pattern-consumable bytes around it (walking outward over the `allowedBytes`
+  set), instead of the whole line.
+- **`Match()` is candidate-driven**: `-l` mode verifies at prefilter hits and
+  early-exits, rather than walking the forward DFA over the entire file.
+
 ### Multi-Literal Prefilter
 
 `RegexMatcher` automatically extracts all required literal substrings from the regex AST (via `extractLiterals` in `literal.go`). For a regex like `ERROR.*code=[45]\d{2}.*request_id=[0-9a-f]+`:
@@ -147,6 +170,46 @@ gogrep -Fe 'ERROR' -Fte 'timeout' -toe '\d+' app.log
 4. Only lines passing all literal checks run through the regex engine.
 
 Position-aware ordering is critical for minified files (single-line, multi-MB) where line-level filtering is meaningless — the ordered check ensures the literals appear in the correct sequence within the line, rejecting false positives that a line-level check would miss.
+
+### Rare-Pair Teddy (internal/simd/teddy.go)
+
+For sets of 2-8 fixed patterns, gogrep uses a variant of ripgrep's Teddy
+algorithm with one structural change: instead of fingerprinting each
+pattern's **first** bytes (Teddy's weakness — sets like `{error, errno,
+errcode}` share the ultra-common prefix "er"), it probes the two **globally
+rarest aligned byte positions** across the set, chosen by a static byte
+frequency table. For the errX set that selects the "rr" pair — ~17x fewer
+false-positive candidates. The scan tests 32 start positions per iteration
+via nibble-split VPSHUFB membership masks ANDed across the two probe
+offsets; each candidate lane carries an 8-bit pattern bitmask so only
+fingerprint-matched patterns are memcmp-verified. Measured ~3.7-7.8 GB/s vs
+~330 MB/s for the Aho-Corasick trie it replaces.
+
+Multiple `-e` patterns that are all fixed/literal collapse into one
+multi-pattern matcher (factory fast path), so `-e a -e b -e c` runs a single
+Teddy scan instead of N full scans OR'd afterwards — also required for
+correct `-v` semantics (invert of the OR, not OR of the inverts).
+
+### Streaming match pipeline + parallel chunking
+
+`Regexp.FindAllIndexFunc` streams match locations to a callback as the scan
+advances; the matcher builds its `MatchSet` (line snippets, newline counts
+for `-n`) inside the callback while the surrounding bytes are still
+cache-hot. On buffers larger than L3 this avoids a second cold pass (the
+`-n` line-count pass alone cost ~3ms per 29MB before).
+
+For buffers ≥ 4MB, single-file search runs **parallel line-aligned chunks**
+(`internal/cli/parallel.go`) across `GOMAXPROCS` goroutines — ripgrep
+searches one file with one thread. Chunk results are rebased (offsets, line
+numbers, position indices) and merged into one MatchSet, so everything
+downstream is unchanged. Enabled only when the matcher reports
+`LineBounded()` (no match can contain `\n`, so line-aligned chunks are
+exact) — FastRegex (via the DFA's allowed-byte set), Boyer-Moore, Teddy,
+and Aho-Corasick all qualify.
+
+The CLI also defers garbage collection (`SetGCPercent(-1)` +
+`SetMemoryLimit(256MB)`, unless `GOGC` is set or in watch mode): a one-shot
+grep process was paying ~1ms/run in GC cycles on a tiny heap.
 
 ### Search-then-Split
 
@@ -162,9 +225,9 @@ For a 500K-line file with 3 matches, the old approach made 500K `findInLine()` c
 
 For **case-sensitive** search, `simd.IndexAll` delegates to `bytes.Index` which already uses optimized AVX2 assembly internally in the Go runtime.
 
-For **case-insensitive** search, `simd.IndexAllCaseInsensitive` uses a custom **SIMD-friendly Horspool** algorithm:
+For **case-insensitive** search, `simd.IndexAllCaseInsensitive` uses a custom **SIMD-friendly Horspool** algorithm. The two probe positions are the pattern's two **rarest** bytes (by a static text/code frequency table), not first+last — for `define` that probes `f`+`d` instead of `d`+`e`, and for `err` it probes the rare `rr` bigram, cutting false-positive verifications by ~5-6x:
 
-1. Broadcast both lower and upper forms of the pattern's first byte and last byte into 32-byte AVX2 vectors.
+1. Broadcast both lower and upper forms of the two probe bytes into 32-byte AVX2 vectors.
 2. For each 32-byte block in the data:
    - Load 32 bytes at position `i` and at position `i + patternLen - 1`.
    - `VPCMPEQB` to compare all 32 positions against lower/upper first bytes, OR the masks.
@@ -198,7 +261,7 @@ Outputs one JSON object per match line in JSON Lines format.
 
 All output goes through `unix.Writev` for scatter-gather I/O, batching filename, separator, line content, and newline into a single syscall.
 
-An `OrderedWriter` buffers out-of-order results from parallel workers and emits them in sequence-number order to maintain deterministic output.
+An `OrderedWriter` buffers out-of-order results from parallel workers and emits them in sequence-number order to maintain deterministic output. Formatted output accumulates in a reused buffer and is flushed in **256 KB batches** (not per file) — on an output-heavy recursive search over ~18K matching files this collapses tens of thousands of write syscalls into a few hundred.
 
 ## Watch Mode
 
@@ -229,6 +292,10 @@ OrderedWriter goroutine
 stdout
 ```
 
+In non-recursive mode with buffers >= 4 MB, the single file is itself
+searched in parallel line-aligned chunks (see "Streaming match pipeline +
+parallel chunking" above).
+
 ## Key Constants
 
 | Parameter | Value |
@@ -241,12 +308,48 @@ stdout
 | File channel buffer | 256 |
 | Result channel buffer | `workers * 2` |
 | Epoll timeout | 100 ms |
+| Output flush threshold | 256 KB |
+| Parallel-chunk threshold | 4 MB (chunks >= 1 MB, line-aligned) |
+| Teddy pattern limit | 2-8 patterns, each >= 2 bytes |
+| GC | deferred to a 256 MB soft limit (except watch mode / explicit `GOGC`) |
+
+## Performance vs ripgrep
+
+Measured 2026-09 against ripgrep 15.1.0 (29MB/500K-line corpus and
+/usr/include; hyperfine; both tools with equivalent smart-case/hidden
+config). gogrep wins or ties every benchmarked workload:
+
+| Workload | gogrep | rg |
+|---|---|---|
+| `ERROR.*port [0-9]+` full output (29MB) | 6.9ms | 6.5ms (tie) |
+| `ERROR.*port [0-9]+` `-c` | **3.8ms** | 7.4ms |
+| `[a-zA-Z]+@[a-zA-Z]+\.[a-zA-Z]+` output | **5.2ms** | 7.1ms |
+| `\d{4}-\d{2}-\d{2}` `-c` | **4.3ms** | 19.5ms |
+| `[A-Z]{2,}` `-c` | **4.9ms** | 53.4ms |
+| `-F -e error -e errno -e errcode` | **6.8ms** | 11.6ms |
+| fixed string `-n` | **8.5ms** | 20.2ms |
+| no-match | **3.0ms** | 8.2ms |
+| recursive `define` `-l` (/usr/include) | **112ms** | 184ms |
+| recursive `define` `-n` (101MB output) | 273ms | 267ms (tie) |
+| recursive `err(or\|no\|code)` `-l` | **140ms** | 153ms |
+
+The full optimization history lives in `education/10-closing-the-ripgrep-gap.md`
+and `education/11-beating-ripgrep.md`. Reproducible micro-benchmarks:
+`internal/output/pipeline_bench_test.go` (staged match→format pipeline),
+`internal/simd/teddy_test.go` and `internal/matcher/teddy_test.go`
+(Teddy vs Aho-Corasick), plus `make bench`.
 
 ## Dependencies
 
 | Package | Purpose |
 |---|---|
 | `golang.org/x/sys` | Linux syscalls (getdents, open, mmap, writev, inotify, epoll) |
-| `go.elara.ws/pcre` | Pure Go PCRE2 port (no cgo) |
+| `go.elara.ws/pcre` | Pure Go PCRE2 port (no cgo) — **`pcre` build tag only** |
 | `github.com/sabhiram/go-gitignore` | .gitignore pattern matching |
 | `simd/archsimd` | Go 1.26 experimental AVX2 intrinsics |
+
+**Why PCRE is opt-in**: `go.elara.ws/pcre` transitively links `modernc.org/libc`,
+whose `netdb` package init parses `/etc/services` (~300 KB) at **every process
+start** — a measured ~5 ms tax on each invocation, tripling gogrep's startup
+floor. The default build stubs `-P` out with a clear error; `make build-pcre`
+produces `bin/gogrep-pcre` with full PCRE support.

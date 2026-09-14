@@ -2,6 +2,8 @@
 
 gogrep started **16x slower** than ripgrep on regex patterns. After building a custom lazy DFA regex engine with SIMD prefiltering, we reached **1.0-1.4x** on most patterns — competitive with ripgrep using pure safe Go. This document records every optimization we tried, what each contributed, and why several promising approaches failed.
 
+> **Update**: a later round ([doc 11](11-beating-ripgrep.md)) went past parity — gogrep now wins or ties every benchmarked workload. It also fixed a concurrency bug in the lazy DFA described here (lazy transition computation raced when one Regexp was shared across scheduler workers; transitions are now fully precomputed at compile time). The final tables in section 6 below are superseded by doc 11 section 13.
+
 ---
 
 ## Table of Contents
@@ -353,4 +355,5 @@ The DFA engine itself was ~2 days of work. UTF-8 handling, zero-width assertions
 - **Doc 07**: Benchmarking and profiling (methodology for the measurements here)
 - **Doc 08**: Regex engines theory (NFA vs DFA, prefilter concepts — the "before" picture)
 - **Doc 09**: DFA register pressure investigation (cold-cache bug, per-transition analysis)
+- **Doc 11**: The next round — startup tax, streaming match pipeline, parallel single-file chunking, rare-pair Teddy (the "after" picture for this document)
 - **horspool-and-automata.md**: SIMD Horspool used by Boyer-Moore matcher
