@@ -61,7 +61,9 @@ Agent options (see agent-mode.md):
       --without-file PAT   Only report files that do not contain PAT (repeatable)
       --suggest            On zero hits, probe derived variants and report
                            counts (always reports, even when nothing occurs)
-      --get-region SPAN    Print exact bytes for a "path@start-end" span id
+      --get-region SPAN    Print exact bytes for a "path@start-end" span id,
+                           or whole lines for "path@:120-160" (1-based)
+      --expand N           Widen --get-region by N whole lines each side
       --use-index          Build/use a trigram index for recursive search;
                            auto-refreshed by a stat sweep on every query
       --clear-index PATH   Delete index state for every root at/under PATH
@@ -327,6 +329,12 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 				die("flag %s requires a value", key)
 			}
 			cfg.GetRegion = v
+		case "--expand":
+			v, ok := nextVal()
+			if !ok {
+				die("flag %s requires a value", key)
+			}
+			cfg.ExpandLines = atoi(v, key)
 		case "--memprofile":
 			v, ok := nextVal()
 			if !ok {

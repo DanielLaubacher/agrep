@@ -51,7 +51,7 @@ func effectiveMaxCols(cfg Config) int {
 func Run(cfg Config) int {
 	// --get-region: fetch bytes for a span id; no search at all.
 	if cfg.GetRegion != "" {
-		return runGetRegion(cfg.GetRegion, output.NewWriter())
+		return runGetRegion(cfg.GetRegion, cfg.ExpandLines, output.NewWriter())
 	}
 
 	// --clear-index: index management; no search at all.

@@ -38,6 +38,44 @@ func TestAppendJSONString(t *testing.T) {
 	}
 }
 
+func TestLineRangeToBytes(t *testing.T) {
+	data := []byte("l1\nl2\nl3\nl4\n")
+	cases := []struct {
+		start, end int
+		want       string
+	}{
+		{1, 1, "l1\n"},
+		{2, 3, "l2\nl3\n"},
+		{4, 9, "l4\n"}, // end past EOF: through last line
+		{9, 9, ""},     // start past EOF: empty
+	}
+	for _, tc := range cases {
+		s, e := lineRangeToBytes(data, tc.start, tc.end)
+		if got := string(data[s:e]); got != tc.want {
+			t.Errorf("lines %d-%d = %q, want %q", tc.start, tc.end, got, tc.want)
+		}
+	}
+}
+
+func TestExpandByLines(t *testing.T) {
+	data := []byte("a\nbb\nccc\ndddd\ne\n")
+	// Span covering just "ccc" (bytes 5-8), expand 1 each side.
+	s, e := expandByLines(data, 5, 8, 1)
+	if got := string(data[s:e]); got != "bb\nccc\ndddd\n" {
+		t.Errorf("expand 1 = %q", got)
+	}
+	// Already line-snapped span must gain exactly n lines, not n+1.
+	s, e = expandByLines(data, 5, 9, 1) // "ccc\n" whole line
+	if got := string(data[s:e]); got != "bb\nccc\ndddd\n" {
+		t.Errorf("expand snapped = %q", got)
+	}
+	// Expansion clamps at file bounds.
+	s, e = expandByLines(data, 0, 2, 5)
+	if s != 0 || e != len(data) {
+		t.Errorf("expand clamp = [%d,%d)", s, e)
+	}
+}
+
 func TestIdentRegex(t *testing.T) {
 	cases := []struct {
 		pattern string

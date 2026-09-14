@@ -19,18 +19,25 @@ import (
 
 // ---------------- --get-region ----------------
 
-// runGetRegion prints the exact bytes for a "path@start-end" span id (as
-// emitted in JSON output's "region" field) and exits. Region ids are
-// self-contained, so an agent can cite a span and later re-fetch it
-// without re-running the search.
-func runGetRegion(region string, w *output.Writer) int {
+// runGetRegion prints the exact bytes for a region id and exits.
+// Two forms: "path@start-end" (byte span, as emitted in JSON "region"
+// fields) and "path@:start-end" (1-based inclusive line range — the
+// dialect of compilers and stack traces). expand widens the region by
+// N whole lines on each side. Region ids are self-contained, so an
+// agent can cite a span and later re-fetch or read around it without
+// re-running the search.
+func runGetRegion(region string, expand int, w *output.Writer) int {
 	at := strings.LastIndexByte(region, '@')
 	if at <= 0 {
-		logWarn("invalid region %q (want path@start-end)", region)
+		logWarn("invalid region %q (want path@start-end or path@:line-line)", region)
 		return 2
 	}
 	path := region[:at]
 	rangeStr := region[at+1:]
+	lineMode := strings.HasPrefix(rangeStr, ":")
+	if lineMode {
+		rangeStr = rangeStr[1:]
+	}
 	dash := strings.IndexByte(rangeStr, '-')
 	if dash <= 0 {
 		logWarn("invalid region range %q (want start-end)", rangeStr)
@@ -50,21 +57,151 @@ func runGetRegion(region string, w *output.Writer) int {
 	}
 	defer unix.Close(fd)
 
-	buf := make([]byte, end-start)
+	// Fast path: exact byte span, no expansion — pread just the range.
+	if !lineMode && expand == 0 {
+		buf := make([]byte, end-start)
+		total := 0
+		for total < len(buf) {
+			n, err := unix.Pread(fd, buf[total:], start+int64(total))
+			if err != nil {
+				logWarn("%s: read: %v", path, err)
+				return 2
+			}
+			if n == 0 {
+				break // region extends past EOF: return what exists
+			}
+			total += n
+		}
+		w.Write(buf[:total])
+		return 0
+	}
+
+	// Line mode or expansion: read the file and resolve line bounds.
+	data, err := readAllFd(fd)
+	if err != nil {
+		logWarn("%s: read: %v", path, err)
+		return 2
+	}
+	var s, e int
+	if lineMode {
+		if start < 1 {
+			start = 1
+		}
+		s, e = lineRangeToBytes(data, int(start), int(end))
+	} else {
+		s, e = int(min(start, int64(len(data)))), int(min(end, int64(len(data))))
+	}
+	if expand > 0 {
+		s, e = expandByLines(data, s, e, expand)
+	}
+	w.Write(data[s:e])
+	return 0
+}
+
+// readAllFd reads the remaining contents of fd from offset 0.
+func readAllFd(fd int) ([]byte, error) {
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, st.Size)
 	total := 0
 	for total < len(buf) {
-		n, err := unix.Pread(fd, buf[total:], start+int64(total))
+		n, err := unix.Pread(fd, buf[total:], int64(total))
 		if err != nil {
-			logWarn("%s: read: %v", path, err)
-			return 2
+			return nil, err
 		}
 		if n == 0 {
-			break // region extends past EOF: return what exists
+			break
 		}
 		total += n
 	}
-	w.Write(buf[:total])
-	return 0
+	return buf[:total], nil
+}
+
+// lineRangeToBytes converts a 1-based inclusive line range to a byte
+// span covering those whole lines (including the final newline).
+func lineRangeToBytes(data []byte, startLine, endLine int) (int, int) {
+	line := 1
+	s, e := 0, len(data)
+	pos := 0
+	for pos < len(data) {
+		if line == startLine {
+			s = pos
+			break
+		}
+		nl := indexByteFrom(data, pos, '\n')
+		if nl < 0 {
+			return len(data), len(data) // start past EOF
+		}
+		pos = nl + 1
+		line++
+	}
+	if line < startLine {
+		return len(data), len(data)
+	}
+	for pos < len(data) && line <= endLine {
+		nl := indexByteFrom(data, pos, '\n')
+		if nl < 0 {
+			return s, len(data)
+		}
+		pos = nl + 1
+		line++
+	}
+	e = pos
+	return s, e
+}
+
+// expandByLines widens byte span [s,e) to whole lines plus n extra
+// lines on each side. A span already at a line boundary is not
+// re-snapped, so expansion is exact regardless of the input form.
+func expandByLines(data []byte, s, e, n int) (int, int) {
+	if s > len(data) {
+		s = len(data)
+	}
+	if e > len(data) {
+		e = len(data)
+	}
+	// Snap s back to its line start (no-op at a boundary), then walk n
+	// whole lines further back.
+	for s > 0 && data[s-1] != '\n' {
+		s--
+	}
+	for i := 0; i < n && s > 0; i++ {
+		s-- // step onto the previous line's newline
+		for s > 0 && data[s-1] != '\n' {
+			s--
+		}
+	}
+	// Snap e forward through the rest of its line unless it already
+	// sits at a boundary, then walk n whole lines further.
+	if e > 0 && e < len(data) && data[e-1] != '\n' {
+		for e < len(data) && data[e] != '\n' {
+			e++
+		}
+		if e < len(data) {
+			e++ // include the newline
+		}
+	}
+	for i := 0; i < n && e < len(data); i++ {
+		for e < len(data) && data[e] != '\n' {
+			e++
+		}
+		if e < len(data) {
+			e++
+		}
+	}
+	return s, e
+}
+
+// indexByteFrom returns the index of c in data at or after pos, or -1.
+func indexByteFrom(data []byte, pos int, c byte) int {
+	for ; pos < len(data); pos++ {
+		if data[pos] == c {
+			return pos
+		}
+	}
+	return -1
 }
 
 // ---------------- --outline ----------------

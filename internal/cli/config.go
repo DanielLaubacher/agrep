@@ -69,7 +69,8 @@ type Config struct {
 	WithFile     []string // --with-file: file must also contain each of these
 	WithoutFile  []string // --without-file: file must not contain any of these
 	Suggest   bool   // --suggest: on zero hits, probe derived variants
-	GetRegion string // --get-region: print bytes for a "path@start-end" span
+	GetRegion   string // --get-region: print bytes for a "path@start-end" span
+	ExpandLines int    // --expand N: widen --get-region by N lines each side
 
 	// Index options (see indexing-daemon.md, phase A).
 	UseIndex   bool   // --use-index: build/use the trigram index for recursive search
