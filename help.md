@@ -300,6 +300,8 @@ Designed for AI agents using gogrep as a sensing API (see agent-mode.md):
 | `--batch FILE` | Run every pattern in FILE (one per line, `#` comments) in a single pass; each file is read once. Results carry their query (`[pattern]` prefix / `"query"` field). |
 | `--suggest` | On zero hits, probe the case-insensitive form and identifier fragments of the pattern; report which occur and where. |
 | `--get-region PATH@START-END` | Print the exact bytes of a span id (as emitted in JSON `"region"`). Lets an agent re-fetch or verify a citation without re-reading the file. |
+| `--use-index` | Build (first use) and use a trigram index for recursive search. Every query re-validates freshness with a parallel stat sweep and transparently reindexes on any drift — reindexes are incremental (only changed files are read), so the index is always current and can never miss a match. Falls back to a cold scan whenever it doesn't apply (different walk options, `-v`, PCRE, patterns with no ≥3-byte literal). |
+| `--clear-index PATH` | Delete index state for every indexed root at or under PATH (e.g. an accidentally indexed `node_modules`). |
 
 JSON output (`--json`) always includes real line numbers, plus `"span"`
 (absolute byte range of the line) and `"region"` (a self-contained id for

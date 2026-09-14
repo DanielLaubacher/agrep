@@ -63,6 +63,10 @@ type Config struct {
 	BatchFile string // --batch: file of patterns, one per line
 	Suggest   bool   // --suggest: on zero hits, probe derived variants
 	GetRegion string // --get-region: print bytes for a "path@start-end" span
+
+	// Index options (see indexing-daemon.md, phase A).
+	UseIndex   bool   // --use-index: build/use the trigram index for recursive search
+	ClearIndex string // --clear-index PATH: delete index state at/under PATH
 }
 
 // NormalizePipelines converts legacy Patterns/Fixed/PCRE fields into the
@@ -97,8 +101,8 @@ func (c *Config) NormalizePipelines() {
 
 // Validate checks that the config is valid and returns an error if not.
 func (c *Config) Validate() error {
-	if c.GetRegion != "" {
-		return nil // --get-region needs no pattern
+	if c.GetRegion != "" || c.ClearIndex != "" {
+		return nil // --get-region / --clear-index need no pattern
 	}
 	if len(c.Patterns) == 0 && len(c.Pipelines) == 0 && c.BatchFile == "" {
 		return fmt.Errorf("no pattern specified")

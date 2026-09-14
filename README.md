@@ -137,6 +137,13 @@ section context (`--sections`), one-pass multi-query execution
 citation spans (`--json` + `--get-region`). See
 [agent-mode.md](agent-mode.md) for the design and examples.
 
+A daemonless trigram index (`--use-index`) prunes repeated searches over
+slowly-changing corpora: candidates come from the index, a per-query
+stat sweep guarantees freshness, and reindexing is incremental via
+per-file digests (only changed files are ever re-read). The index is a
+prefilter, never an answerer — every match is verified against disk
+bytes. See [indexing-daemon.md](indexing-daemon.md).
+
 ## Architecture
 
 See [architecture.md](architecture.md) for detailed design documentation covering the pipeline, syscall usage, SIMD algorithms, concurrency model, and key constants. The `education/` directory contains in-depth writeups of every subsystem and the ripgrep-gap optimization campaign.

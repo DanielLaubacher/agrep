@@ -189,13 +189,35 @@ simply light up when the daemon is present.
 
 ## Phases (each independently shippable and testable)
 
-**A — Index core, no daemon.** `gogrep index ROOT` builds the cache;
-`--use-index` consumes it in-process with sweep-validated freshness
-(and `--frozen` to skip sweeps for static corpora). This is already a
-complete correct product. Differential tests (indexed vs cold byte-equal
-output over randomized corpora, including mid-test mutations caught by
-the sweep; property test: candidates ⊇ files with matches) de-risk
-everything before any long-running process exists.
+**A — Index core, no daemon. [SHIPPED]** The surface shrank further in
+implementation (all inferred from `--use-index`; no subcommand, no
+`--frozen`):
+
+- `--use-index` builds on first use, then every query runs a parallel
+  stat sweep and **reindexes on any drift** (0% threshold) — affordable
+  because reindexing is incremental: `forward.bin` stores each file's
+  digest (trigram set + token counts) keyed by (path, size, mtimeNs),
+  so only changed files are ever re-read. This is the git-blob-reuse
+  property without content hashes (a content Merkle tree would cost the
+  very reads it avoids; a stat "tree" can't roll up since directory
+  mtimes don't propagate).
+- A `roots.json` registry makes digests reusable **across roots**:
+  building a parent of an already-indexed tree adopts the child's
+  digests (measured: parent build over an indexed child read only the
+  uncovered files). This replaced the "relocatable segments" design.
+- `--clear-index PATH` deletes state for every root at/under PATH (the
+  accidental-node_modules remedy); opts-mismatched indexes fall back to
+  a cold scan with a stderr note rather than rebuild-thrashing.
+- Fallbacks to cold scan: opts mismatch, `-v`, PCRE stages, patterns
+  with no ≥3-byte required literal do use the index but as walk-skip
+  only (all files + dirty).
+
+Measured (books corpus, 836 files/531MB): build 7.8s parallel, index
+78MB (~15%), selective query 26ms vs 49ms cold (1.85x; page-cache-warm
+— the win grows when cold), single-file edit reindex reads exactly 1
+file. Differential tests: indexed vs cold byte-equal on repo + corpus
+(literal, regex, multi-`-e`); property tests for candidates ⊇ matches,
+sweep add/modify/delete, digest reuse, parent-adopts-child.
 
 **B — Daemon + transparency.** `gogrep serve`, socket + registry,
 auto-handoff with fallback, inotify journal, staleness contract,

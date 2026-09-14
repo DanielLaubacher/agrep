@@ -54,6 +54,11 @@ func Run(cfg Config) int {
 		return runGetRegion(cfg.GetRegion, output.NewWriter())
 	}
 
+	// --clear-index: index management; no search at all.
+	if cfg.ClearIndex != "" {
+		return runClearIndex(cfg.ClearIndex)
+	}
+
 	// Normalize pipelines from legacy fields if needed
 	cfg.NormalizePipelines()
 
@@ -242,20 +247,31 @@ func runFiles(paths []string, m matcher.Matcher, reader input.Reader, formatter 
 }
 
 func runRecursive(paths []string, m matcher.Matcher, reader input.Reader, formatter output.Formatter, w *output.Writer, cfg Config, mode searchMode) int {
-	fileCh, errCh := walker.Walk(paths, walker.WalkOptions{
-		Recursive:      true,
-		NoIgnore:       cfg.NoIgnore,
-		Hidden:         cfg.Hidden,
-		FollowSymlinks: cfg.FollowSymlinks,
-		Globs:          cfg.Globs,
-	})
-
-	// Log walk errors in background
-	go func() {
-		for err := range errCh {
-			logWarn("walk: %v", err)
+	// --use-index: source files from the trigram index (candidates +
+	// sweep-dirty) instead of walking. Falls back to the cold walk
+	// whenever the index doesn't apply.
+	var fileCh <-chan walker.FileEntry
+	if cfg.UseIndex && len(paths) == 1 {
+		if ch, ok := indexedFileChannel(cfg, paths[0]); ok {
+			fileCh = ch
 		}
-	}()
+	}
+	if fileCh == nil {
+		ch, errCh := walker.Walk(paths, walker.WalkOptions{
+			Recursive:      true,
+			NoIgnore:       cfg.NoIgnore,
+			Hidden:         cfg.Hidden,
+			FollowSymlinks: cfg.FollowSymlinks,
+			Globs:          cfg.Globs,
+		})
+		fileCh = ch
+		// Log walk errors in background
+		go func() {
+			for err := range errCh {
+				logWarn("walk: %v", err)
+			}
+		}()
+	}
 
 	// Create scheduler and run workers
 	sched := scheduler.New(cfg.Workers, m, reader, mode == searchFilesOnly, mode == searchCountOnly)

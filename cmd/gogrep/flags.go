@@ -49,6 +49,9 @@ Agent options (see agent-mode.md):
       --batch FILE         Run all patterns in FILE (one per line) in one pass
       --suggest            On zero hits, probe derived variants and report counts
       --get-region SPAN    Print exact bytes for a "path@start-end" span id
+      --use-index          Build/use a trigram index for recursive search;
+                           auto-refreshed by a stat sweep on every query
+      --clear-index PATH   Delete index state for every root at/under PATH
 
 Pipeline:
   Flags -F, -P, -t, -o are per-stage modifiers that apply to the next -e.
@@ -262,6 +265,14 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			cfg.BatchFile = v
 		case "--suggest":
 			cfg.Suggest = true
+		case "--use-index":
+			cfg.UseIndex = true
+		case "--clear-index":
+			v, ok := nextVal()
+			if !ok {
+				die("flag %s requires a value", key)
+			}
+			cfg.ClearIndex = v
 		case "--get-region":
 			v, ok := nextVal()
 			if !ok {
@@ -302,7 +313,7 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 	// Parse positional args: first arg is pattern (if -e not used), rest are files.
 	// --get-region and --batch supply their own work, so no pattern is required
 	// and every positional is a path.
-	if cfg.GetRegion != "" || cfg.BatchFile != "" {
+	if cfg.GetRegion != "" || cfg.BatchFile != "" || cfg.ClearIndex != "" {
 		cfg.Paths = positional
 	} else if !explicitE {
 		if len(positional) == 0 {
