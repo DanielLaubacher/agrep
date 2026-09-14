@@ -20,7 +20,10 @@ type TextFormatter struct {
 
 	// Sections prints a "§ <heading>" group line whenever the enclosing
 	// Markdown heading of the printed matches changes (--sections).
+	// Scope does the same with the enclosing definition line (--scope);
+	// when both are set, Scope wins (it covers Markdown via headings).
 	Sections    bool
+	Scope       bool
 	lastSection string
 	lastFile    string
 }
@@ -78,8 +81,8 @@ func (f *TextFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 		}
 	} else {
 		for i := range ms.Matches {
-			if f.Sections {
-				buf = f.formatSectionLine(buf, result.FilePath, ms, i)
+			if f.Scope || f.Sections {
+				buf = f.formatGroupLine(buf, result.FilePath, ms, i)
 			}
 			buf = f.formatMatch(buf, result.FilePath, result.Query, ms, i, multiFile)
 		}
@@ -87,14 +90,19 @@ func (f *TextFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 	return buf
 }
 
-// formatSectionLine emits a "§ heading" group line when the enclosing
-// Markdown section of the match differs from the previously printed one.
-func (f *TextFormatter) formatSectionLine(buf []byte, filePath string, ms *matcher.MatchSet, idx int) []byte {
+// formatGroupLine emits a "§ <annotation>" group line when the enclosing
+// scope/section of the match differs from the previously printed one.
+func (f *TextFormatter) formatGroupLine(buf []byte, filePath string, ms *matcher.MatchSet, idx int) []byte {
 	m := &ms.Matches[idx]
 	if m.LineStart < 0 || m.IsContext {
 		return buf
 	}
-	h := sectionHeading(ms.Data, m.LineStart)
+	var h []byte
+	if f.Scope {
+		h = enclosingScope(ms.Data, m.LineStart, filePath)
+	} else {
+		h = sectionHeading(ms.Data, m.LineStart)
+	}
 	if h == nil {
 		return buf
 	}

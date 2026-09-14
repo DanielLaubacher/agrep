@@ -48,6 +48,8 @@ Agent options (see agent-mode.md):
       --outline            Per-file survey (count + exemplar line), busiest first
       --top K              Limit --outline to the K busiest files
       --sections           Annotate matches with their Markdown section heading
+      --scope              Annotate matches with their enclosing definition
+                           (func/class/def by language; headings in Markdown)
       --batch FILE         Run all patterns in FILE (one per line) in one pass
       --suggest            On zero hits, probe derived variants and report
                            counts (always reports, even when nothing occurs)
@@ -265,6 +267,8 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			cfg.TopK = atoi(v, key)
 		case "--sections":
 			cfg.Sections = true
+		case "--scope":
+			cfg.Scope = true
 		case "--batch":
 			v, ok := nextVal()
 			if !ok {

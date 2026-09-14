@@ -138,12 +138,14 @@ func Run(cfg Config) int {
 	if cfg.JSONOutput {
 		jf := output.NewJSONFormatter()
 		jf.Sections = cfg.Sections
+		jf.Scope = cfg.Scope
 		jf.CountOnly = cfg.CountOnly
 		jf.FilesOnly = cfg.FileNamesOnly
 		formatter = jf
 	} else {
 		tf := output.NewTextFormatter(cfg.LineNumbers, cfg.CountOnly, cfg.FileNamesOnly, useColor, maxCols, onlyMatch)
 		tf.Sections = cfg.Sections
+		tf.Scope = cfg.Scope
 		formatter = tf
 	}
 	if cfg.MaxTokens > 0 {

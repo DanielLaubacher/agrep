@@ -61,6 +61,7 @@ type Config struct {
 	Outline   bool   // --outline: per-file survey instead of match lines
 	TopK      int    // --top: limit outline to the K busiest files
 	Sections  bool   // --sections: annotate matches with Markdown headings
+	Scope     bool   // --scope: annotate matches with the enclosing definition
 	BatchFile string // --batch: file of patterns, one per line
 	Suggest   bool   // --suggest: on zero hits, probe derived variants
 	GetRegion string // --get-region: print bytes for a "path@start-end" span

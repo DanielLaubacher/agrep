@@ -11,6 +11,9 @@ import (
 type JSONFormatter struct {
 	// Sections annotates each match with its enclosing Markdown heading.
 	Sections bool
+	// Scope annotates each match with its enclosing definition line
+	// (--scope); Markdown files fall back to the heading.
+	Scope bool
 	// CountOnly emits {"type":"count"} objects instead of matches (-c).
 	CountOnly bool
 	// FilesOnly emits {"type":"file"} objects instead of matches (-l).
@@ -42,6 +45,7 @@ type jsonMatch struct {
 	Span    *[2]int64 `json:"span,omitempty"`
 	Region  string    `json:"region,omitempty"`
 	Section string    `json:"section,omitempty"`
+	Scope   string    `json:"scope,omitempty"`
 	Query   string    `json:"query,omitempty"`
 }
 
@@ -145,6 +149,11 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 		if f.Sections {
 			if h := sectionHeading(ms.Data, m.LineStart); h != nil {
 				jm.Section = string(h)
+			}
+		}
+		if f.Scope {
+			if s := enclosingScope(ms.Data, m.LineStart, result.FilePath); s != nil {
+				jm.Scope = string(s)
 			}
 		}
 		emitted++
