@@ -88,7 +88,7 @@ func runBatch(cfg Config, reader input.Reader, stdinReader input.Reader, formatt
 	}
 
 	// Stdin: search the single buffer with each matcher in turn.
-	if len(cfg.Paths) == 0 && cfg.FilesFrom == "" {
+	if len(cfg.Paths) == 0 && cfg.FilesFrom == "" && cfg.ChangedSince == "" {
 		return runBatchStdin(stdinReader, matchers, patterns, formatter, w)
 	}
 

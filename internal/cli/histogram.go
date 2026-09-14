@@ -77,7 +77,7 @@ func (h *histAccum) addResult(r *output.Result) {
 func runHistogram(paths []string, m matcher.Matcher, reader input.Reader, stdinReader input.Reader, w *output.Writer, cfg Config) int {
 	acc := newHistAccum()
 
-	if len(paths) == 0 && cfg.FilesFrom == "" {
+	if len(paths) == 0 && cfg.FilesFrom == "" && cfg.ChangedSince == "" {
 		r := searchReader(stdinReader, "", m, searchFull, false)
 		if r.Err != nil {
 			logWarn("stdin: %v", r.Err)

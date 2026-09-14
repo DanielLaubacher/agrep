@@ -170,7 +170,7 @@ func Run(cfg Config) int {
 
 	// Determine input sources
 	paths := cfg.Paths
-	readFromStdin := len(paths) == 0 && cfg.FilesFrom == ""
+	readFromStdin := len(paths) == 0 && cfg.FilesFrom == "" && cfg.ChangedSince == ""
 
 	if cfg.WatchMode {
 		return runWatch(paths, m, formatter, w, cfg)
@@ -192,7 +192,7 @@ func Run(cfg Config) int {
 	switch {
 	case readFromStdin:
 		exitCode = runStdin(stdinReader, m, formatter, w, cfg.LineNumbers)
-	case cfg.Recursive || cfg.FilesFrom != "":
+	case cfg.Recursive || cfg.FilesFrom != "" || cfg.ChangedSince != "":
 		exitCode = runRecursive(paths, m, reader, formatter, w, cfg, mode)
 	default:
 		exitCode = runFiles(paths, m, reader, formatter, w, mode, cfg.LineNumbers)

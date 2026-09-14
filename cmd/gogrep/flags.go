@@ -55,6 +55,8 @@ Agent options (see agent-mode.md):
       --batch FILE         Run all patterns in FILE (one per line) in one pass
       --files-from FILE    Search the files listed in FILE ('-' = stdin),
                            one path per line, instead of walking
+      --changed-since REF  Search only files changed since the git REF
+                           (plus untracked files; requires git)
       --suggest            On zero hits, probe derived variants and report
                            counts (always reports, even when nothing occurs)
       --get-region SPAN    Print exact bytes for a "path@start-end" span id
@@ -287,6 +289,12 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 				die("flag %s requires a value", key)
 			}
 			cfg.FilesFrom = v
+		case "--changed-since":
+			v, ok := nextVal()
+			if !ok {
+				die("flag %s requires a value", key)
+			}
+			cfg.ChangedSince = v
 		case "--suggest":
 			cfg.Suggest = true
 		case "--ident":

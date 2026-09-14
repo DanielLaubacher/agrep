@@ -64,7 +64,8 @@ type Config struct {
 	Sections  bool   // --sections: annotate matches with Markdown headings
 	Scope     bool   // --scope: annotate matches with the enclosing definition
 	BatchFile string // --batch: file of patterns, one per line
-	FilesFrom string // --files-from: file of paths to search ('-' = stdin)
+	FilesFrom    string // --files-from: file of paths to search ('-' = stdin)
+	ChangedSince string // --changed-since REF: only files changed since the git ref
 	Suggest   bool   // --suggest: on zero hits, probe derived variants
 	GetRegion string // --get-region: print bytes for a "path@start-end" span
 
@@ -145,6 +146,9 @@ func (c *Config) Validate() error {
 	}
 	if c.CountOnly && c.FileNamesOnly {
 		return fmt.Errorf("cannot use -c (count) and -l (files-with-matches) together")
+	}
+	if c.FilesFrom != "" && c.ChangedSince != "" {
+		return fmt.Errorf("cannot use --files-from and --changed-since together")
 	}
 	return nil
 }

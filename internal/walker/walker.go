@@ -448,3 +448,11 @@ func (e *WalkError) Error() string {
 func (e *WalkError) Unwrap() error {
 	return e.Err
 }
+
+// MatchesGlobs applies include/exclude globs (prefix ! to exclude) to a
+// base name, with the same semantics the walker uses during traversal.
+// Exported for file sources that bypass the walk (--changed-since).
+func MatchesGlobs(globs []string, name string) bool {
+	pw := &parallelWalker{globs: globs}
+	return !pw.isGlobExcluded(name)
+}

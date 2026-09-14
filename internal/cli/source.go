@@ -7,8 +7,11 @@ package cli
 // works everywhere.
 
 import (
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/dl/gogrep/internal/walker"
@@ -17,6 +20,19 @@ import (
 // fileSource returns the channel of files to search. Walk errors are
 // logged to stderr in the background.
 func fileSource(cfg Config, paths []string) (<-chan walker.FileEntry, error) {
+	if cfg.ChangedSince != "" {
+		list, err := changedFiles(cfg.ChangedSince, paths, cfg.Globs)
+		if err != nil {
+			return nil, err
+		}
+		ch := make(chan walker.FileEntry, len(list))
+		for _, p := range list {
+			ch <- walker.FileEntry{Path: p}
+		}
+		close(ch)
+		return ch, nil
+	}
+
 	if cfg.FilesFrom != "" {
 		list, err := loadFileList(cfg.FilesFrom)
 		if err != nil {
@@ -75,4 +91,88 @@ func loadFileList(from string) ([]string, error) {
 		}
 	}
 	return list, nil
+}
+
+// changedFiles resolves --changed-since REF: files changed between REF
+// and the worktree plus untracked (not ignored) files, restricted to
+// the search paths and include/exclude globs. Requires the git binary;
+// this is the one stateless place gogrep shells out. Deleted files are
+// dropped; tracked files bypass ignore rules deliberately (a tracked
+// file is searchable even when a .gitignore would hide it from walks).
+func changedFiles(ref string, paths []string, globs []string) ([]string, error) {
+	root, err := gitOutput("rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, fmt.Errorf("--changed-since: not in a git repository (%v)", err)
+	}
+	rootDir := strings.TrimRight(string(root), "\n")
+
+	diff, err := gitOutput("diff", "--name-only", "-z", ref, "--")
+	if err != nil {
+		return nil, fmt.Errorf("--changed-since %s: %v", ref, err)
+	}
+	untracked, err := gitOutput("ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("--changed-since: %v", err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+
+	seen := map[string]bool{}
+	var list []string
+	for _, chunk := range [][]byte{diff, untracked} {
+		for rel := range strings.SplitSeq(string(chunk), "\x00") {
+			if rel == "" || seen[rel] {
+				continue
+			}
+			seen[rel] = true
+			abs := filepath.Join(rootDir, rel)
+			if st, err := os.Stat(abs); err != nil || st.IsDir() {
+				continue // deleted since, or a submodule
+			}
+			// Prefer a cwd-relative path for display parity with walks.
+			display := abs
+			if r, err := filepath.Rel(cwd, abs); err == nil && !strings.HasPrefix(r, "..") {
+				display = r
+			}
+			if !underAnyPath(display, paths) {
+				continue
+			}
+			if !walker.MatchesGlobs(globs, filepath.Base(display)) {
+				continue
+			}
+			list = append(list, display)
+		}
+	}
+	return list, nil
+}
+
+// underAnyPath reports whether file lies at or under one of the search
+// paths. An empty path list means the whole repository.
+func underAnyPath(file string, paths []string) bool {
+	if len(paths) == 0 {
+		return true
+	}
+	for _, p := range paths {
+		cp := filepath.Clean(p)
+		if cp == "." || file == cp || strings.HasPrefix(file, cp+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// gitOutput runs a git subcommand and returns its stdout.
+func gitOutput(args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return nil, fmt.Errorf("%s", strings.TrimSpace(string(ee.Stderr)))
+		}
+		return nil, err
+	}
+	return out, nil
 }
