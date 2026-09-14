@@ -60,6 +60,7 @@ type Config struct {
 	MaxTokens int    // --max-tokens: output token budget (0 = unlimited)
 	Outline   bool   // --outline: per-file survey instead of match lines
 	Histogram bool   // --histogram: distinct matched texts with counts
+	Rank      string // --rank: outline order — "count" (default) or "density"
 	TopK      int    // --top: limit outline/histogram to the K busiest entries
 	Sections  bool   // --sections: annotate matches with Markdown headings
 	Scope     bool   // --scope: annotate matches with the enclosing definition

@@ -38,6 +38,33 @@ func TestAppendJSONString(t *testing.T) {
 	}
 }
 
+func TestDemotedPath(t *testing.T) {
+	demoted := []string{
+		"vendor/github.com/x/y.go",
+		"a/node_modules/b.js",
+		"internal/index/testdata/big.txt",
+		"Cargo.lock",
+		"api/service.pb.go",
+		"web/app.min.js",
+		"go.sum",
+	}
+	kept := []string{
+		"internal/cli/run.go",
+		"internal/cli/agent_test.go",
+		"docs/vendors.md", // "vendors" is not the "vendor" segment
+	}
+	for _, p := range demoted {
+		if !demotedPath(p) {
+			t.Errorf("demotedPath(%q) = false, want true", p)
+		}
+	}
+	for _, p := range kept {
+		if demotedPath(p) {
+			t.Errorf("demotedPath(%q) = true, want false", p)
+		}
+	}
+}
+
 func TestLineRangeToBytes(t *testing.T) {
 	data := []byte("l1\nl2\nl3\nl4\n")
 	cases := []struct {

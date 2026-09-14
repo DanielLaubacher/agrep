@@ -49,6 +49,8 @@ Agent options (see agent-mode.md):
       --top K              Limit --outline/--histogram to the K busiest entries
       --histogram          Count distinct matched texts (uniq -c built in);
                            composes with -o pipelines
+      --rank MODE          --outline order: count (default) or density
+                           (matches/KB, demotes vendored/generated files)
       --sections           Annotate matches with their Markdown section heading
       --scope              Annotate matches with their enclosing definition
                            (func/class/def by language; headings in Markdown)
@@ -271,6 +273,15 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			cfg.Outline = true
 		case "--histogram":
 			cfg.Histogram = true
+		case "--rank":
+			v, ok := nextVal()
+			if !ok {
+				die("flag %s requires a value", key)
+			}
+			if v != "count" && v != "density" {
+				die("--rank must be count or density, got %q", v)
+			}
+			cfg.Rank = v
 		case "--top":
 			v, ok := nextVal()
 			if !ok {

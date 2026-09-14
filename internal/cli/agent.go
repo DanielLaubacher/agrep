@@ -210,6 +210,7 @@ func indexByteFrom(data []byte, pos int, c byte) int {
 type outlineEntry struct {
 	path     string
 	count    int
+	size     int // file size in bytes, for density ranking
 	exemplar string
 }
 
@@ -223,7 +224,7 @@ const outlineExemplarMax = 120
 // themselves, then earliest. The exemplar is copied before the result's
 // buffer is released.
 func outlineFromResult(r *output.Result) (outlineEntry, bool) {
-	entry := outlineEntry{path: r.FilePath}
+	entry := outlineEntry{path: r.FilePath, size: len(r.MatchSet.Data)}
 	ms := &r.MatchSet
 	bestIdx := -1
 	bestOcc := 0
@@ -288,12 +289,39 @@ func runOutline(paths []string, m matcher.Matcher, reader input.Reader, w *outpu
 		}
 	}
 
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].count != entries[j].count {
-			return entries[i].count > entries[j].count
+	if cfg.Rank == "density" {
+		// Matching lines per KB, with a flat demotion for generated and
+		// vendored artifacts — a 200-line file about the concept should
+		// outrank a 20k-line file that mentions it as often.
+		score := func(e *outlineEntry) float64 {
+			kb := float64(e.size) / 1024.0
+			if kb < 1 {
+				kb = 1
+			}
+			s := float64(e.count) / kb
+			if demotedPath(e.path) {
+				s *= 0.25
+			}
+			return s
 		}
-		return entries[i].path < entries[j].path
-	})
+		sort.Slice(entries, func(i, j int) bool {
+			si, sj := score(&entries[i]), score(&entries[j])
+			if si != sj {
+				return si > sj
+			}
+			if entries[i].count != entries[j].count {
+				return entries[i].count > entries[j].count
+			}
+			return entries[i].path < entries[j].path
+		})
+	} else {
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].count != entries[j].count {
+				return entries[i].count > entries[j].count
+			}
+			return entries[i].path < entries[j].path
+		})
+	}
 
 	totalFiles := len(entries)
 	totalLines := 0
@@ -349,6 +377,33 @@ func runOutline(paths []string, m matcher.Matcher, reader input.Reader, w *outpu
 		return 0
 	}
 	return 1
+}
+
+// demotedPath reports whether a path points at vendored, generated, or
+// lock-style content that should rank below hand-written code in
+// density mode.
+func demotedPath(path string) bool {
+	for seg := range strings.SplitSeq(path, "/") {
+		switch seg {
+		case "vendor", "node_modules", "testdata", "third_party", "dist", ".git":
+			return true
+		}
+	}
+	base := path
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		base = path[i+1:]
+	}
+	switch {
+	case strings.HasSuffix(base, ".lock"),
+		strings.HasSuffix(base, ".min.js"),
+		strings.HasSuffix(base, ".pb.go"),
+		strings.HasSuffix(base, ".gen.go"),
+		strings.Contains(base, "_generated"),
+		base == "package-lock.json",
+		base == "go.sum":
+		return true
+	}
+	return false
 }
 
 // appendJSONString appends s as a JSON string literal.
