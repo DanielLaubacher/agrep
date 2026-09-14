@@ -129,18 +129,18 @@ func Run(cfg Config) int {
 	}
 
 	if readFromStdin {
-		return runStdin(stdinReader, m, formatter, w)
+		return runStdin(stdinReader, m, formatter, w, cfg.LineNumbers)
 	}
 
 	if cfg.Recursive {
 		return runRecursive(paths, m, reader, formatter, w, cfg, mode)
 	}
 
-	return runFiles(paths, m, reader, formatter, w, mode)
+	return runFiles(paths, m, reader, formatter, w, mode, cfg.LineNumbers)
 }
 
-func runStdin(reader input.Reader, m matcher.Matcher, formatter output.Formatter, w *output.Writer) int {
-	result := searchReader(reader, "", m, searchFull)
+func runStdin(reader input.Reader, m matcher.Matcher, formatter output.Formatter, w *output.Writer, lineNums bool) int {
+	result := searchReader(reader, "", m, searchFull, lineNums)
 	if result.HasMatch() {
 		buf := formatter.Format(nil, result, false)
 		if result.Closer != nil {
@@ -155,13 +155,13 @@ func runStdin(reader input.Reader, m matcher.Matcher, formatter output.Formatter
 	return 1
 }
 
-func runFiles(paths []string, m matcher.Matcher, reader input.Reader, formatter output.Formatter, w *output.Writer, mode searchMode) int {
+func runFiles(paths []string, m matcher.Matcher, reader input.Reader, formatter output.Formatter, w *output.Writer, mode searchMode, lineNums bool) int {
 	multiFile := len(paths) > 1
 	hasMatch := false
 	var buf []byte
 
 	for _, path := range paths {
-		result := searchReader(reader, path, m, mode)
+		result := searchReader(reader, path, m, mode, lineNums)
 		if result.Err != nil {
 			logWarn("%s: %v", path, result.Err)
 			continue
@@ -169,10 +169,16 @@ func runFiles(paths []string, m matcher.Matcher, reader input.Reader, formatter 
 		if result.HasMatch() {
 			hasMatch = true
 		}
-		buf = formatter.Format(buf[:0], result, multiFile)
+		buf = formatter.Format(buf, result, multiFile)
 		if result.Closer != nil {
 			result.Closer()
 		}
+		if len(buf) >= 256*1024 {
+			w.Write(buf)
+			buf = buf[:0]
+		}
+	}
+	if len(buf) > 0 {
 		w.Write(buf)
 	}
 
@@ -308,7 +314,7 @@ func hasOnlyMatch(m matcher.Matcher) bool {
 	return false
 }
 
-func searchReader(r input.Reader, path string, m matcher.Matcher, mode searchMode) output.Result {
+func searchReader(r input.Reader, path string, m matcher.Matcher, mode searchMode, lineNums bool) output.Result {
 	result := output.Result{FilePath: path}
 
 	readResult, err := r.Read(path)
@@ -336,16 +342,31 @@ func searchReader(r input.Reader, path string, m matcher.Matcher, mode searchMod
 
 	switch mode {
 	case searchFilesOnly:
-		if m.MatchExists(readResult.Data) {
+		exists := false
+		if useParallelSearch(readResult.Data, m) {
+			exists = parallelMatchExists(readResult.Data, m)
+		} else {
+			exists = m.MatchExists(readResult.Data)
+		}
+		if exists {
 			result.MatchSet = matcher.MatchSet{Matches: []matcher.Match{{}}}
 		}
 		closeReader()
 	case searchCountOnly:
-		count := m.CountAll(readResult.Data)
+		var count int
+		if useParallelSearch(readResult.Data, m) {
+			count = parallelCountAll(readResult.Data, m)
+		} else {
+			count = m.CountAll(readResult.Data)
+		}
 		result.MatchCount = count
 		closeReader()
 	default:
-		result.MatchSet = m.FindAll(readResult.Data)
+		if useParallelSearch(readResult.Data, m) {
+			result.MatchSet = parallelFindAll(readResult.Data, m, lineNums)
+		} else {
+			result.MatchSet = m.FindAll(readResult.Data)
+		}
 		// MatchSet.Data is the file buffer — pass Closer
 		// to the caller so the buffer stays alive until formatting is done.
 		if result.MatchSet.HasMatch() {

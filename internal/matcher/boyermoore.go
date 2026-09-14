@@ -35,6 +35,12 @@ func NewBoyerMooreMatcher(pattern string, ignoreCase bool, invert bool) *BoyerMo
 	}
 }
 
+// LineBounded reports that no match spans a newline (the fixed pattern
+// contains none), enabling parallel line-aligned chunked search.
+func (m *BoyerMooreMatcher) LineBounded() bool {
+	return !bytes.ContainsRune(m.pattern, '\n')
+}
+
 func (m *BoyerMooreMatcher) MatchExists(data []byte) bool {
 	if m.invert {
 		return len(data) > 0

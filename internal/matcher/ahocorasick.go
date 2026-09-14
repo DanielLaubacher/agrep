@@ -170,6 +170,17 @@ func (m *AhoCorasickMatcher) matchExists(data []byte) bool {
 	return false
 }
 
+// LineBounded reports that no match spans a newline (no pattern contains
+// one), enabling parallel line-aligned chunked search.
+func (m *AhoCorasickMatcher) LineBounded() bool {
+	for _, p := range m.patterns {
+		if bytes.ContainsRune(p, '\n') {
+			return false
+		}
+	}
+	return true
+}
+
 func (m *AhoCorasickMatcher) MatchExists(data []byte) bool {
 	if m.invert {
 		return len(data) > 0
