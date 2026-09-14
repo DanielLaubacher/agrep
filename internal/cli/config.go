@@ -66,6 +66,8 @@ type Config struct {
 	BatchFile string // --batch: file of patterns, one per line
 	FilesFrom    string // --files-from: file of paths to search ('-' = stdin)
 	ChangedSince string // --changed-since REF: only files changed since the git ref
+	WithFile     []string // --with-file: file must also contain each of these
+	WithoutFile  []string // --without-file: file must not contain any of these
 	Suggest   bool   // --suggest: on zero hits, probe derived variants
 	GetRegion string // --get-region: print bytes for a "path@start-end" span
 

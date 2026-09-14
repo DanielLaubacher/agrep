@@ -117,6 +117,36 @@ func Run(cfg Config) int {
 			return 2
 		}
 
+		// --with-file/--without-file: gate matches on file-level
+		// conditions. Filtering is never silent — the excluded count is
+		// reported on exit.
+		if len(cfg.WithFile)+len(cfg.WithoutFile) > 0 {
+			probes := func(patterns []string) ([]matcher.Matcher, error) {
+				ms := make([]matcher.Matcher, len(patterns))
+				for i, p := range patterns {
+					pm, err := matcher.NewMatcher([]string{p}, false, false, cfg.IgnoreCase, false, matcher.MatcherOpts{})
+					if err != nil {
+						return nil, err
+					}
+					ms[i] = pm
+				}
+				return ms, nil
+			}
+			with, err1 := probes(cfg.WithFile)
+			without, err2 := probes(cfg.WithoutFile)
+			if err1 != nil || err2 != nil {
+				logWarn("invalid file-filter pattern: %v%v", err1, err2)
+				return 2
+			}
+			ff := matcher.NewFileFilter(m, with, without)
+			m = ff
+			defer func() {
+				if n := ff.Excluded(); n > 0 {
+					logWarn("%d files matched but were excluded by --with-file/--without-file", n)
+				}
+			}()
+		}
+
 		// Detect if we need only-matched output mode
 		onlyMatch = hasOnlyMatch(m)
 

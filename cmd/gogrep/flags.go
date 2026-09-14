@@ -57,6 +57,8 @@ Agent options (see agent-mode.md):
                            one path per line, instead of walking
       --changed-since REF  Search only files changed since the git REF
                            (plus untracked files; requires git)
+      --with-file PAT      Only report files that also contain PAT (repeatable)
+      --without-file PAT   Only report files that do not contain PAT (repeatable)
       --suggest            On zero hits, probe derived variants and report
                            counts (always reports, even when nothing occurs)
       --get-region SPAN    Print exact bytes for a "path@start-end" span id
@@ -295,6 +297,18 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 				die("flag %s requires a value", key)
 			}
 			cfg.ChangedSince = v
+		case "--with-file":
+			v, ok := nextVal()
+			if !ok {
+				die("flag %s requires a value", key)
+			}
+			cfg.WithFile = append(cfg.WithFile, v)
+		case "--without-file":
+			v, ok := nextVal()
+			if !ok {
+				die("flag %s requires a value", key)
+			}
+			cfg.WithoutFile = append(cfg.WithoutFile, v)
 		case "--suggest":
 			cfg.Suggest = true
 		case "--ident":
