@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"unicode"
 
 	"golang.org/x/sys/unix"
 
@@ -267,7 +266,9 @@ type suggestVariant struct {
 }
 
 // suggestVariants derives probes from a failed pattern: its
-// case-insensitive form and the word fragments of a split identifier.
+// case-insensitive form and the word fragments of a split identifier
+// (ConnectTimeout / connect_timeout / connect-timeout → connect,
+// timeout; fragments shorter than 4 bytes are too noisy to probe).
 func suggestVariants(pattern string) []suggestVariant {
 	var out []suggestVariant
 	lower := strings.ToLower(pattern)
@@ -275,28 +276,7 @@ func suggestVariants(pattern string) []suggestVariant {
 		out = append(out, suggestVariant{pattern: lower, label: "case-insensitive"})
 	}
 
-	// Split on case boundaries and non-alphanumerics:
-	// ConnectTimeout / connect_timeout / connect-timeout → connect, timeout
-	var words []string
-	var cur strings.Builder
-	flush := func() {
-		if cur.Len() >= 4 {
-			words = append(words, strings.ToLower(cur.String()))
-		}
-		cur.Reset()
-	}
-	runes := []rune(pattern)
-	for i, r := range runes {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			flush()
-			continue
-		}
-		if i > 0 && unicode.IsUpper(r) && unicode.IsLower(runes[i-1]) {
-			flush()
-		}
-		cur.WriteRune(r)
-	}
-	flush()
+	words := splitIdentWords(pattern, 4)
 
 	seen := map[string]bool{lower: true, pattern: true}
 	for _, wd := range words {

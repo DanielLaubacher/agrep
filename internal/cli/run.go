@@ -62,6 +62,11 @@ func Run(cfg Config) int {
 	// Normalize pipelines from legacy fields if needed
 	cfg.NormalizePipelines()
 
+	// --ident: rewrite patterns as word-bounded case-convention regexes.
+	if cfg.Ident {
+		applyIdent(&cfg)
+	}
+
 	// Smart case: if enabled and all patterns are lowercase, enable case-insensitive
 	if cfg.SmartCase && !cfg.IgnoreCase {
 		allLower := true

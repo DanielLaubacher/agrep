@@ -38,6 +38,58 @@ func TestAppendJSONString(t *testing.T) {
 	}
 }
 
+func TestIdentRegex(t *testing.T) {
+	cases := []struct {
+		pattern string
+		want    string
+	}{
+		{"connectTimeout", `(?i)\bconnect[_-]?timeout\b`},
+		{"connect_timeout", `(?i)\bconnect[_-]?timeout\b`},
+		{"CONNECT-TIMEOUT", `(?i)\bconnect[_-]?timeout\b`},
+		{"Match", `(?i)\bmatch\b`},
+		{"utf8Parser", `(?i)\butf8[_-]?parser\b`},
+		{"---", ""},
+	}
+	for _, tc := range cases {
+		if got := identRegex(tc.pattern); got != tc.want {
+			t.Errorf("identRegex(%q) = %q, want %q", tc.pattern, got, tc.want)
+		}
+	}
+}
+
+// TestIdentMatchingSemantics compiles the ident regex and checks the
+// precision/recall contract: all case conventions match, substrings of
+// longer identifiers do not.
+func TestIdentMatchingSemantics(t *testing.T) {
+	m, err := matcher.NewMatcher([]string{identRegex("connectTimeout")}, false, false, false, false, matcher.MatcherOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shouldMatch := []string{
+		"x := connectTimeout + 1",
+		"CONNECT_TIMEOUT = 30",
+		"set connect-timeout here",
+		"ConnectTimeout int",
+		"connecttimeout=5",
+	}
+	shouldNot := []string{
+		"xconnectTimeout",
+		"connectTimeoutMs",
+		"preconnect_timeout",
+		"connect timeout", // separated by space: different tokens
+	}
+	for _, s := range shouldMatch {
+		if !m.MatchExists([]byte(s)) {
+			t.Errorf("ident should match %q", s)
+		}
+	}
+	for _, s := range shouldNot {
+		if m.MatchExists([]byte(s)) {
+			t.Errorf("ident should NOT match %q", s)
+		}
+	}
+}
+
 // TestOutlineExemplarSelection verifies the exemplar is the most
 // informative matching line, not the literal first one: a boilerplate
 // single-occurrence line must lose to a line with more occurrences.

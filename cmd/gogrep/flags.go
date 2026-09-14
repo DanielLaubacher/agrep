@@ -42,6 +42,8 @@ Options:
   -h, --help               Show this help
 
 Agent options (see agent-mode.md):
+      --ident              Match the pattern as an identifier: all case
+                           conventions (camel/snake/kebab/SCREAMING), word-bounded
       --max-tokens N       Budget output to ~N tokens; report what was omitted
       --outline            Per-file survey (count + exemplar line), busiest first
       --top K              Limit --outline to the K busiest files
@@ -271,6 +273,8 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			cfg.BatchFile = v
 		case "--suggest":
 			cfg.Suggest = true
+		case "--ident":
+			cfg.Ident = true
 		case "--use-index":
 			cfg.UseIndex = true
 		case "--clear-index":

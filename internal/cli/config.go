@@ -56,6 +56,7 @@ type Config struct {
 	Paths          []string
 
 	// Agent-oriented options (see agent-mode.md).
+	Ident     bool   // --ident: match all case conventions of an identifier, word-bounded
 	MaxTokens int    // --max-tokens: output token budget (0 = unlimited)
 	Outline   bool   // --outline: per-file survey instead of match lines
 	TopK      int    // --top: limit outline to the K busiest files

@@ -67,7 +67,14 @@ func runBatch(cfg Config, reader input.Reader, stdinReader input.Reader, formatt
 	opts := matcher.MatcherOpts{MaxCols: effectiveMaxCols(cfg), NeedLineNums: cfg.LineNumbers || cfg.JSONOutput}
 	matchers := make([]matcher.Matcher, len(patterns))
 	for i, p := range patterns {
-		m, err := matcher.NewMatcher([]string{p}, cfg.Fixed, cfg.PCRE, ignoreCase, cfg.Invert, opts)
+		fixed, pcre := cfg.Fixed, cfg.PCRE
+		if cfg.Ident {
+			if re := identRegex(p); re != "" {
+				p = re
+				fixed, pcre = false, false
+			}
+		}
+		m, err := matcher.NewMatcher([]string{p}, fixed, pcre, ignoreCase, cfg.Invert, opts)
 		if err != nil {
 			logWarn("batch pattern %q: %v", p, err)
 			return 2
