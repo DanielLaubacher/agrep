@@ -67,3 +67,9 @@ type Matcher interface {
 	// lineNum is 1-based, byteOffset is the offset of the line start in the file.
 	FindLine(line []byte, lineNum int, byteOffset int64) (MatchSet, bool)
 }
+
+// WithMatches returns a copy of the set sharing Data and Positions but
+// holding only the given matches (used by output-side filtering).
+func (ms *MatchSet) WithMatches(matches []Match) MatchSet {
+	return MatchSet{Data: ms.Data, Matches: matches, Positions: ms.Positions}
+}

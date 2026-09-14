@@ -186,6 +186,16 @@ func Run(cfg Config) int {
 	if cfg.MaxTokens > 0 {
 		formatter = output.NewBudgetFormatter(formatter, cfg.MaxTokens, cfg.JSONOutput)
 	}
+	// Collapse wraps outside the budget so suppressed repeats never
+	// spend budget. Needs whole match lines: incompatible with context
+	// lines and meaningless for -c/-l.
+	if cfg.Collapse {
+		if cfg.ContextBefore > 0 || cfg.ContextAfter > 0 || cfg.CountOnly || cfg.FileNamesOnly {
+			logWarn("--collapse ignored with context lines, -c, or -l")
+		} else {
+			formatter = output.NewCollapseFormatter(formatter, cfg.JSONOutput)
+		}
+	}
 
 	reader := input.NewAdaptiveReader(cfg.MmapThreshold)
 	stdinReader := input.NewStdinReader()
