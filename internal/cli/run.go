@@ -133,6 +133,8 @@ func Run(cfg Config) int {
 	if cfg.JSONOutput {
 		jf := output.NewJSONFormatter()
 		jf.Sections = cfg.Sections
+		jf.CountOnly = cfg.CountOnly
+		jf.FilesOnly = cfg.FileNamesOnly
 		formatter = jf
 	} else {
 		tf := output.NewTextFormatter(cfg.LineNumbers, cfg.CountOnly, cfg.FileNamesOnly, useColor, maxCols, onlyMatch)
@@ -182,8 +184,12 @@ func Run(cfg Config) int {
 
 	// Zero hits: probe derived variants so the agent's next query is
 	// informed instead of guessed.
-	if exitCode == 1 && cfg.Suggest && !readFromStdin && len(cfg.Patterns) == 1 {
-		runSuggest(cfg.Patterns[0], paths, reader, w, cfg)
+	if exitCode == 1 && cfg.Suggest {
+		if readFromStdin {
+			logWarn("--suggest needs file paths to probe; ignored for stdin")
+		} else if len(cfg.Patterns) > 0 {
+			runSuggest(cfg.Patterns, paths, reader, w, cfg)
+		}
 	}
 	return exitCode
 }

@@ -2,7 +2,11 @@ package cli
 
 import (
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/dl/gogrep/internal/matcher"
+	"github.com/dl/gogrep/internal/output"
 )
 
 func TestSuggestVariants(t *testing.T) {
@@ -31,5 +35,105 @@ func TestAppendJSONString(t *testing.T) {
 	want := `"a\"b\\c\u000ad"`
 	if got != want {
 		t.Errorf("appendJSONString = %s, want %s", got, want)
+	}
+}
+
+// TestOutlineExemplarSelection verifies the exemplar is the most
+// informative matching line, not the literal first one: a boilerplate
+// single-occurrence line must lose to a line with more occurrences.
+func TestOutlineExemplarSelection(t *testing.T) {
+	data := []byte("package matcher\nfunc NewMatcher() Matcher { return matcher{} }\n")
+	r := output.Result{
+		FilePath: "t.go",
+		MatchSet: matcher.MatchSet{
+			Data: data,
+			Matches: []matcher.Match{
+				{LineNum: 1, LineStart: 0, LineLen: 15, PosIdx: 0, PosCount: 1},
+				{LineNum: 2, LineStart: 16, LineLen: 46, PosIdx: 1, PosCount: 3},
+			},
+			Positions: [][2]int{{8, 15}, {8, 15}, {18, 25}, {36, 43}},
+		},
+	}
+	e, ok := outlineFromResult(&r)
+	if !ok || e.count != 2 {
+		t.Fatalf("outlineFromResult: ok=%v count=%d, want ok=true count=2", ok, e.count)
+	}
+	if !strings.HasPrefix(e.exemplar, "func NewMatcher") {
+		t.Errorf("exemplar = %q, want the 3-occurrence line, not boilerplate", e.exemplar)
+	}
+}
+
+// TestOutlineExemplarContextTieBreak: at equal occurrence counts, a line
+// carrying text beyond the match beats a line that is only the match.
+func TestOutlineExemplarContextTieBreak(t *testing.T) {
+	data := []byte("backoff\nuse jittered backoff here\n")
+	r := output.Result{
+		FilePath: "t.md",
+		MatchSet: matcher.MatchSet{
+			Data: data,
+			Matches: []matcher.Match{
+				{LineNum: 1, LineStart: 0, LineLen: 7, PosIdx: 0, PosCount: 1},
+				{LineNum: 2, LineStart: 8, LineLen: 25, PosIdx: 1, PosCount: 1},
+			},
+			Positions: [][2]int{{0, 7}, {13, 20}},
+		},
+	}
+	e, _ := outlineFromResult(&r)
+	if e.exemplar != "use jittered backoff here" {
+		t.Errorf("exemplar = %q, want the context-bearing line", e.exemplar)
+	}
+}
+
+// TestSuggestReportNeverSilent: every zero-hit outcome must produce a
+// report — hits, no-variant-occurs, and no-derivable-variants alike.
+func TestSuggestReportNeverSilent(t *testing.T) {
+	probes := []suggestProbe{
+		{suggestVariant{pattern: "connect", label: "fragment"}, 0, 0},
+		{suggestVariant{pattern: "timeout", label: "fragment"}, 0, 0},
+	}
+
+	// Text, zero variants occur.
+	got := string(appendSuggestReport(nil, []string{"ConnectTimeout"}, probes, false))
+	if !strings.Contains(got, "none of the derived variants occur") ||
+		!strings.Contains(got, "connect") {
+		t.Errorf("zero-occurrence text report = %q", got)
+	}
+
+	// Text, no derivable variants.
+	got = string(appendSuggestReport(nil, []string{"qqqq"}, nil, false))
+	if !strings.Contains(got, "no derivable variants") {
+		t.Errorf("no-variant text report = %q", got)
+	}
+
+	// JSON always ends with suggest_summary and lists zero-count probes.
+	got = string(appendSuggestReport(nil, []string{"ConnectTimeout"}, probes, true))
+	if !strings.Contains(got, `"type":"suggest","variant":"connect","kind":"fragment","lines":0`) {
+		t.Errorf("JSON report missing zero-count probe: %q", got)
+	}
+	if !strings.Contains(got, `{"type":"suggest_summary","patterns":["ConnectTimeout"],"tried":2,"found":0}`) {
+		t.Errorf("JSON report missing suggest_summary: %q", got)
+	}
+
+	// JSON, no derivable variants: still a suggest_summary.
+	got = string(appendSuggestReport(nil, []string{"qqqq"}, nil, true))
+	if !strings.Contains(got, `"tried":0,"found":0`) {
+		t.Errorf("no-variant JSON report = %q", got)
+	}
+}
+
+// TestSuggestReportHits mirrors runSuggest's contract: occurring
+// variants are listed in text output; zero-count probes are not.
+func TestSuggestReportHits(t *testing.T) {
+	probes := []suggestProbe{
+		{suggestVariant{pattern: "timeout", label: "fragment"}, 3, 2},
+		{suggestVariant{pattern: "connect", label: "fragment"}, 0, 0},
+	}
+	got := string(appendSuggestReport(nil, []string{"ConnectTimeout"}, probes, false))
+	if !strings.Contains(got, "variants that do occur") ||
+		!strings.Contains(got, "timeout (fragment): 3 lines in 2 files") {
+		t.Errorf("hit report = %q", got)
+	}
+	if strings.Contains(got, "connect (fragment)") {
+		t.Errorf("zero-count probe leaked into text hit list: %q", got)
 	}
 }

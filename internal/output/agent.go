@@ -142,10 +142,24 @@ func (f *BudgetFormatter) Finish(buf []byte) []byte {
 	return buf
 }
 
+// RegisterQueries forwards batch query registration to the wrapped
+// formatter, so per-query zero totals survive budget wrapping.
+func (f *BudgetFormatter) RegisterQueries(queries []string) {
+	if qr, ok := f.inner.(QueryRegistrar); ok {
+		qr.RegisterQueries(queries)
+	}
+}
+
 // Finisher is implemented by formatters that emit a trailer after the
 // last result (e.g. BudgetFormatter's omission summary).
 type Finisher interface {
 	Finish(buf []byte) []byte
+}
+
+// QueryRegistrar is implemented by formatters that report per-query
+// totals and want the full query list up front (--batch).
+type QueryRegistrar interface {
+	RegisterQueries(queries []string)
 }
 
 var _ Formatter = (*BudgetFormatter)(nil)

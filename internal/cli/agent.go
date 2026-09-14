@@ -73,31 +73,57 @@ func runGetRegion(region string, w *output.Writer) int {
 
 // outlineEntry is one row of the per-file survey.
 type outlineEntry struct {
-	path  string
-	count int
-	first string
+	path     string
+	count    int
+	exemplar string
 }
 
 const outlineExemplarMax = 120
 
-// outlineFromResult extracts (count, first matching line) from a full
-// search result. The exemplar is copied before the result's buffer is
-// released.
+// outlineFromResult extracts (count, exemplar line) from a full search
+// result. The exemplar is the file's most informative matching line, not
+// merely its first: the literal first match in code is often boilerplate
+// (imports, a package clause). Preference order: most match occurrences
+// on the line, then a line that carries text beyond the matches
+// themselves, then earliest. The exemplar is copied before the result's
+// buffer is released.
 func outlineFromResult(r *output.Result) (outlineEntry, bool) {
 	entry := outlineEntry{path: r.FilePath}
-	for i := range r.MatchSet.Matches {
-		m := &r.MatchSet.Matches[i]
+	ms := &r.MatchSet
+	bestIdx := -1
+	bestOcc := 0
+	bestCtx := false
+	for i := range ms.Matches {
+		m := &ms.Matches[i]
 		if m.IsContext || m.LineStart < 0 {
 			continue
 		}
 		entry.count++
-		if entry.first == "" {
-			line := r.MatchSet.Data[m.LineStart : m.LineStart+m.LineLen]
-			if len(line) > outlineExemplarMax {
-				line = line[:outlineExemplarMax]
-			}
-			entry.first = strings.TrimSpace(string(line))
+
+		occ := m.PosCount
+		if occ == 0 {
+			occ = 1
 		}
+		matched := 0
+		for _, p := range ms.MatchPositions(i) {
+			matched += p[1] - p[0]
+		}
+		line := strings.TrimSpace(string(ms.Data[m.LineStart : m.LineStart+m.LineLen]))
+		hasCtx := len(line) > matched
+
+		if bestIdx < 0 || occ > bestOcc || (occ == bestOcc && hasCtx && !bestCtx) {
+			bestIdx = i
+			bestOcc = occ
+			bestCtx = hasCtx
+		}
+	}
+	if bestIdx >= 0 {
+		m := &ms.Matches[bestIdx]
+		line := ms.Data[m.LineStart : m.LineStart+m.LineLen]
+		if len(line) > outlineExemplarMax {
+			line = line[:outlineExemplarMax]
+		}
+		entry.exemplar = strings.TrimSpace(string(line))
 	}
 	return entry, entry.count > 0
 }
@@ -174,8 +200,8 @@ func runOutline(paths []string, m matcher.Matcher, reader input.Reader, w *outpu
 			buf = appendJSONString(buf, e.path)
 			buf = append(buf, `,"count":`...)
 			buf = strconv.AppendInt(buf, int64(e.count), 10)
-			buf = append(buf, `,"first":`...)
-			buf = appendJSONString(buf, e.first)
+			buf = append(buf, `,"exemplar":`...)
+			buf = appendJSONString(buf, e.exemplar)
 			buf = append(buf, "}\n"...)
 		}
 		buf = append(buf, `{"type":"summary","files":`...)
@@ -201,7 +227,7 @@ func runOutline(paths []string, m matcher.Matcher, reader input.Reader, w *outpu
 			buf = append(buf, '\t')
 			buf = append(buf, e.path...)
 			buf = append(buf, '\t')
-			buf = append(buf, e.first...)
+			buf = append(buf, e.exemplar...)
 			buf = append(buf, '\n')
 		}
 	}
@@ -286,72 +312,130 @@ func suggestVariants(pattern string) []suggestVariant {
 	return out
 }
 
-// runSuggest probes derived variants of a zero-hit pattern and reports
-// which of them occur in the corpus (case-insensitive fixed-string
-// probes), giving the agent its next query instead of an empty result.
-func runSuggest(pattern string, paths []string, reader input.Reader, w *output.Writer, cfg Config) {
-	variants := suggestVariants(pattern)
-	if len(variants) == 0 {
-		return
+// suggestProbe is one probed variant with its corpus counts.
+type suggestProbe struct {
+	suggestVariant
+	lines int
+	files int
+}
+
+// runSuggest probes derived variants of the zero-hit pattern(s) and
+// reports which of them occur in the corpus (case-insensitive
+// fixed-string probes), giving the agent its next query instead of an
+// empty result. It always writes a report — "no derivable variants" and
+// "no variant occurs" are findings, not silence.
+func runSuggest(patterns []string, paths []string, reader input.Reader, w *output.Writer, cfg Config) {
+	// Merge variants across patterns, deduplicating probes.
+	var variants []suggestVariant
+	seen := map[string]bool{}
+	for _, p := range patterns {
+		for _, v := range suggestVariants(p) {
+			if seen[v.pattern] {
+				continue
+			}
+			seen[v.pattern] = true
+			variants = append(variants, v)
+		}
 	}
 
-	// Probe all variants first so the report can lead with the most
-	// selective (rarest) ones — those are the informative next queries.
-	type hit struct {
-		v     suggestVariant
-		lines int
-		files int
-	}
-	var hits []hit
+	probes := make([]suggestProbe, 0, len(variants))
 	for _, v := range variants {
 		m, err := matcher.NewMatcher([]string{v.pattern}, true, false, true, false, matcher.MatcherOpts{})
 		if err != nil {
 			continue
 		}
 		lines, files := probeCount(paths, m, reader, cfg)
-		if lines > 0 {
-			hits = append(hits, hit{v, lines, files})
+		probes = append(probes, suggestProbe{v, lines, files})
+	}
+
+	// Occurring variants lead, rarest first — those are the most
+	// selective next queries. Zero-count probes trail in derivation order.
+	sort.SliceStable(probes, func(i, j int) bool {
+		if (probes[i].lines > 0) != (probes[j].lines > 0) {
+			return probes[i].lines > 0
+		}
+		return probes[i].lines > 0 && probes[i].lines < probes[j].lines
+	})
+
+	w.Write(appendSuggestReport(nil, patterns, probes, cfg.JSONOutput))
+}
+
+// appendSuggestReport renders the --suggest report. JSON output lists
+// every probe (zero counts included) and ends with a suggest_summary
+// object; text output lists occurring variants and always states an
+// outcome, so a zero-hit + zero-variant run is never silent.
+func appendSuggestReport(buf []byte, patterns []string, probes []suggestProbe, jsonOut bool) []byte {
+	found := 0
+	for _, p := range probes {
+		if p.lines > 0 {
+			found++
 		}
 	}
-	sort.Slice(hits, func(i, j int) bool { return hits[i].lines < hits[j].lines })
 
-	var buf []byte
-	if !cfg.JSONOutput && len(hits) > 0 {
-		buf = append(buf, "[gogrep] no matches for '"...)
-		buf = append(buf, pattern...)
-		buf = append(buf, "'; variants that do occur (rarest first):\n"...)
-	}
-	found := 0
-
-	for _, h := range hits {
-		v, lines, files := h.v, h.lines, h.files
-		found++
-		if cfg.JSONOutput {
+	if jsonOut {
+		for _, p := range probes {
 			buf = append(buf, `{"type":"suggest","variant":`...)
-			buf = appendJSONString(buf, v.pattern)
+			buf = appendJSONString(buf, p.pattern)
 			buf = append(buf, `,"kind":`...)
-			buf = appendJSONString(buf, v.label)
+			buf = appendJSONString(buf, p.label)
 			buf = append(buf, `,"lines":`...)
-			buf = strconv.AppendInt(buf, int64(lines), 10)
+			buf = strconv.AppendInt(buf, int64(p.lines), 10)
 			buf = append(buf, `,"files":`...)
-			buf = strconv.AppendInt(buf, int64(files), 10)
+			buf = strconv.AppendInt(buf, int64(p.files), 10)
 			buf = append(buf, "}\n"...)
-		} else {
+		}
+		buf = append(buf, `{"type":"suggest_summary","patterns":[`...)
+		for i, p := range patterns {
+			if i > 0 {
+				buf = append(buf, ',')
+			}
+			buf = appendJSONString(buf, p)
+		}
+		buf = append(buf, `],"tried":`...)
+		buf = strconv.AppendInt(buf, int64(len(probes)), 10)
+		buf = append(buf, `,"found":`...)
+		buf = strconv.AppendInt(buf, int64(found), 10)
+		buf = append(buf, "}\n"...)
+		return buf
+	}
+
+	quoted := "'" + strings.Join(patterns, "', '") + "'"
+	switch {
+	case len(probes) == 0:
+		buf = append(buf, "[gogrep] no matches for "...)
+		buf = append(buf, quoted...)
+		buf = append(buf, "; no derivable variants to probe\n"...)
+	case found == 0:
+		buf = append(buf, "[gogrep] no matches for "...)
+		buf = append(buf, quoted...)
+		buf = append(buf, "; none of the derived variants occur (tried: "...)
+		for i, p := range probes {
+			if i > 0 {
+				buf = append(buf, ", "...)
+			}
+			buf = append(buf, p.pattern...)
+		}
+		buf = append(buf, ")\n"...)
+	default:
+		buf = append(buf, "[gogrep] no matches for "...)
+		buf = append(buf, quoted...)
+		buf = append(buf, "; variants that do occur (rarest first):\n"...)
+		for _, p := range probes {
+			if p.lines == 0 {
+				continue
+			}
 			buf = append(buf, "  "...)
-			buf = append(buf, v.pattern...)
+			buf = append(buf, p.pattern...)
 			buf = append(buf, " ("...)
-			buf = append(buf, v.label...)
+			buf = append(buf, p.label...)
 			buf = append(buf, "): "...)
-			buf = strconv.AppendInt(buf, int64(lines), 10)
+			buf = strconv.AppendInt(buf, int64(p.lines), 10)
 			buf = append(buf, " lines in "...)
-			buf = strconv.AppendInt(buf, int64(files), 10)
+			buf = strconv.AppendInt(buf, int64(p.files), 10)
 			buf = append(buf, " files\n"...)
 		}
 	}
-
-	if found > 0 {
-		w.Write(buf)
-	}
+	return buf
 }
 
 // probeCount counts matching lines and files for a variant probe.

@@ -75,6 +75,12 @@ func runBatch(cfg Config, reader input.Reader, stdinReader input.Reader, formatt
 		matchers[i] = m
 	}
 
+	// Seed per-query totals so zero-hit queries still appear in the
+	// JSON summary.
+	if qr, ok := formatter.(output.QueryRegistrar); ok {
+		qr.RegisterQueries(patterns)
+	}
+
 	// Stdin: search the single buffer with each matcher in turn.
 	if len(cfg.Paths) == 0 {
 		return runBatchStdin(stdinReader, matchers, patterns, formatter, w)

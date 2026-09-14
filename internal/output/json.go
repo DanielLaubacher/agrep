@@ -6,9 +6,21 @@ import (
 )
 
 // JSONFormatter formats results as JSON Lines (one JSON object per match).
+// It tallies what it emits and appends an exact {"type":"summary",...}
+// trailer via Finish, so a JSON consumer always receives totals.
 type JSONFormatter struct {
 	// Sections annotates each match with its enclosing Markdown heading.
 	Sections bool
+	// CountOnly emits {"type":"count"} objects instead of matches (-c).
+	CountOnly bool
+	// FilesOnly emits {"type":"file"} objects instead of matches (-l).
+	FilesOnly bool
+
+	files int
+	lines int
+	// Per-query totals for --batch, in first-seen order.
+	queryOrder  []string
+	queryTotals map[string]*[2]int // query -> {files, lines}
 }
 
 // NewJSONFormatter creates a JSONFormatter.
@@ -38,21 +50,83 @@ type jsonPos struct {
 	End   int `json:"end"`
 }
 
+// RegisterQueries pre-seeds the per-query totals (--batch), so queries
+// with zero hits still appear in the summary — for an agent, an explicit
+// zero is a finding, not an omission.
+func (f *JSONFormatter) RegisterQueries(queries []string) {
+	for _, q := range queries {
+		f.queryEntry(q)
+	}
+}
+
+func (f *JSONFormatter) queryEntry(query string) *[2]int {
+	if f.queryTotals == nil {
+		f.queryTotals = make(map[string]*[2]int)
+	}
+	qt := f.queryTotals[query]
+	if qt == nil {
+		qt = &[2]int{}
+		f.queryTotals[query] = qt
+		f.queryOrder = append(f.queryOrder, query)
+	}
+	return qt
+}
+
+// tally records emitted totals (overall and per batch query).
+func (f *JSONFormatter) tally(query string, lines int) {
+	f.files++
+	f.lines += lines
+	if query == "" {
+		return
+	}
+	qt := f.queryEntry(query)
+	qt[0]++
+	qt[1] += lines
+}
+
 func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte {
-	ms := &result.MatchSet
-	if len(ms.Matches) == 0 {
+	if result.Err != nil || !result.HasMatch() {
 		return buf
 	}
 
+	// -l: one object per matching file; the dummy MatchSet carries no
+	// line data, so a match object would be a broken citation.
+	if f.FilesOnly {
+		buf = append(buf, `{"type":"file","file":`...)
+		buf = appendJSONString(buf, result.FilePath)
+		if result.Query != "" {
+			buf = append(buf, `,"query":`...)
+			buf = appendJSONString(buf, result.Query)
+		}
+		buf = append(buf, "}\n"...)
+		f.tally(result.Query, 0)
+		return buf
+	}
+
+	// -c: one count object per matching file.
+	if f.CountOnly {
+		count := result.Count()
+		buf = append(buf, `{"type":"count","file":`...)
+		buf = appendJSONString(buf, result.FilePath)
+		buf = append(buf, `,"count":`...)
+		buf = strconv.AppendInt(buf, int64(count), 10)
+		if result.Query != "" {
+			buf = append(buf, `,"query":`...)
+			buf = appendJSONString(buf, result.Query)
+		}
+		buf = append(buf, "}\n"...)
+		f.tally(result.Query, count)
+		return buf
+	}
+
+	ms := &result.MatchSet
+	emitted := 0
 	for i := range ms.Matches {
 		m := &ms.Matches[i]
-		if m.IsContext {
+		// Skip context lines and group separators (LineStart < 0) — JSON
+		// consumers get real matched lines only.
+		if m.IsContext || m.LineStart < 0 {
 			continue
-		}
-
-		var lineText string
-		if m.LineStart >= 0 {
-			lineText = string(ms.Data[m.LineStart : m.LineStart+m.LineLen])
 		}
 
 		jm := jsonMatch{
@@ -60,21 +134,20 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 			File:       result.FilePath,
 			LineNum:    m.LineNum,
 			ByteOffset: m.ByteOffset,
-			Text:       lineText,
+			Text:       string(ms.Data[m.LineStart : m.LineStart+m.LineLen]),
 			Query:      result.Query,
 		}
 
-		if m.LineStart >= 0 {
-			span := [2]int64{m.ByteOffset, m.ByteOffset + int64(m.LineLen)}
-			jm.Span = &span
-			jm.Region = result.FilePath + "@" +
-				strconv.FormatInt(span[0], 10) + "-" + strconv.FormatInt(span[1], 10)
-			if f.Sections {
-				if h := sectionHeading(ms.Data, m.LineStart); h != nil {
-					jm.Section = string(h)
-				}
+		span := [2]int64{m.ByteOffset, m.ByteOffset + int64(m.LineLen)}
+		jm.Span = &span
+		jm.Region = result.FilePath + "@" +
+			strconv.FormatInt(span[0], 10) + "-" + strconv.FormatInt(span[1], 10)
+		if f.Sections {
+			if h := sectionHeading(ms.Data, m.LineStart); h != nil {
+				jm.Section = string(h)
 			}
 		}
+		emitted++
 
 		positions := ms.MatchPositions(i)
 		if len(positions) > 0 {
@@ -87,8 +160,64 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 		buf = append(buf, data...)
 		buf = append(buf, '\n')
 	}
+	if emitted > 0 {
+		f.tally(result.Query, emitted)
+	}
 	return buf
 }
 
-// Ensure JSONFormatter implements Formatter.
+// Finish appends the exact-totals summary trailer. In -l mode line counts
+// are unknown, so "lines" is omitted. Batch runs additionally carry
+// per-query totals in first-seen order.
+func (f *JSONFormatter) Finish(buf []byte) []byte {
+	buf = append(buf, `{"type":"summary","files":`...)
+	buf = strconv.AppendInt(buf, int64(f.files), 10)
+	if !f.FilesOnly {
+		buf = append(buf, `,"lines":`...)
+		buf = strconv.AppendInt(buf, int64(f.lines), 10)
+	}
+	if len(f.queryOrder) > 0 {
+		buf = append(buf, `,"queries":[`...)
+		for i, q := range f.queryOrder {
+			if i > 0 {
+				buf = append(buf, ',')
+			}
+			qt := f.queryTotals[q]
+			buf = append(buf, `{"query":`...)
+			buf = appendJSONString(buf, q)
+			buf = append(buf, `,"files":`...)
+			buf = strconv.AppendInt(buf, int64(qt[0]), 10)
+			if !f.FilesOnly {
+				buf = append(buf, `,"lines":`...)
+				buf = strconv.AppendInt(buf, int64(qt[1]), 10)
+			}
+			buf = append(buf, '}')
+		}
+		buf = append(buf, ']')
+	}
+	buf = append(buf, "}\n"...)
+	return buf
+}
+
+// appendJSONString appends s as a JSON string literal.
+func appendJSONString(buf []byte, s string) []byte {
+	buf = append(buf, '"')
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '"' || c == '\\':
+			buf = append(buf, '\\', c)
+		case c < 0x20:
+			buf = append(buf, `\u00`...)
+			const hex = "0123456789abcdef"
+			buf = append(buf, hex[c>>4], hex[c&0xF])
+		default:
+			buf = append(buf, c)
+		}
+	}
+	return append(buf, '"')
+}
+
+// Ensure JSONFormatter implements Formatter and Finisher.
 var _ Formatter = (*JSONFormatter)(nil)
+var _ Finisher = (*JSONFormatter)(nil)

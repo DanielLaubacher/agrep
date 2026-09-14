@@ -112,6 +112,99 @@ func TestJSONFormatter_NoMatches(t *testing.T) {
 	}
 }
 
+func TestJSONFormatter_SummaryTrailer(t *testing.T) {
+	f := NewJSONFormatter()
+	data := []byte("hello world\n")
+	result := Result{
+		FilePath: "test.txt",
+		MatchSet: matcher.MatchSet{
+			Data: data,
+			Matches: []matcher.Match{
+				{LineNum: 1, LineStart: 0, LineLen: 11, PosIdx: 0, PosCount: 1},
+			},
+			Positions: [][2]int{{0, 5}},
+		},
+	}
+	buf := f.Format(nil, result, false)
+	got := string(f.Finish(buf))
+	if !strings.HasSuffix(strings.TrimSpace(got), `{"type":"summary","files":1,"lines":1}`) {
+		t.Errorf("missing summary trailer, got %q", got)
+	}
+}
+
+func TestJSONFormatter_EmptySummary(t *testing.T) {
+	f := NewJSONFormatter()
+	got := strings.TrimSpace(string(f.Finish(nil)))
+	if got != `{"type":"summary","files":0,"lines":0}` {
+		t.Errorf("zero-result summary = %q", got)
+	}
+}
+
+func TestJSONFormatter_CountMode(t *testing.T) {
+	f := NewJSONFormatter()
+	f.CountOnly = true
+	buf := f.Format(nil, Result{FilePath: "a.txt", MatchCount: 7}, true)
+	// Zero-count results are skipped, like text -c.
+	buf = f.Format(buf, Result{FilePath: "b.txt"}, true)
+	got := string(f.Finish(buf))
+	want := `{"type":"count","file":"a.txt","count":7}` + "\n" +
+		`{"type":"summary","files":1,"lines":7}` + "\n"
+	if got != want {
+		t.Errorf("count mode = %q, want %q", got, want)
+	}
+}
+
+func TestJSONFormatter_FilesMode(t *testing.T) {
+	f := NewJSONFormatter()
+	f.FilesOnly = true
+	r := Result{FilePath: "a.txt", MatchSet: matcher.MatchSet{Matches: []matcher.Match{{}}}}
+	got := string(f.Finish(f.Format(nil, r, true)))
+	// No degenerate match object, no fabricated line counts.
+	want := `{"type":"file","file":"a.txt"}` + "\n" +
+		`{"type":"summary","files":1}` + "\n"
+	if got != want {
+		t.Errorf("files mode = %q, want %q", got, want)
+	}
+	if strings.Contains(got, `"span"`) || strings.Contains(got, `"lines"`) {
+		t.Errorf("files mode leaked span/lines: %q", got)
+	}
+}
+
+func TestJSONFormatter_BatchQueryTotals(t *testing.T) {
+	f := NewJSONFormatter()
+	f.CountOnly = true
+	// Registration makes zero-hit queries appear explicitly.
+	f.RegisterQueries([]string{"alpha", "beta"})
+	buf := f.Format(nil, Result{FilePath: "a.txt", MatchCount: 3, Query: "alpha"}, true)
+	got := string(f.Finish(buf))
+	if !strings.Contains(got, `"queries":[{"query":"alpha","files":1,"lines":3},{"query":"beta","files":0,"lines":0}]`) {
+		t.Errorf("batch summary missing per-query totals: %q", got)
+	}
+}
+
+func TestBudgetWrapEmitsSingleSummary(t *testing.T) {
+	inner := NewJSONFormatter()
+	bf := NewBudgetFormatter(inner, 1000, true)
+	data := []byte("hello world\n")
+	r := Result{
+		FilePath: "test.txt",
+		MatchSet: matcher.MatchSet{
+			Data: data,
+			Matches: []matcher.Match{
+				{LineNum: 1, LineStart: 0, LineLen: 11, PosIdx: 0, PosCount: 1},
+			},
+			Positions: [][2]int{{0, 5}},
+		},
+	}
+	got := string(bf.Finish(bf.Format(nil, r, false)))
+	if strings.Count(got, `"type":"summary"`) != 1 {
+		t.Errorf("budget-wrapped output must emit exactly one summary: %q", got)
+	}
+	if !strings.Contains(got, `"shown_lines"`) {
+		t.Errorf("budget summary shape lost: %q", got)
+	}
+}
+
 func TestJSONFormatter_MatchPositions(t *testing.T) {
 	f := NewJSONFormatter()
 	data := []byte("hello world hello\n")
