@@ -81,7 +81,6 @@ var binaryExts = map[string]struct{}{
 	".tif":  {},
 	".tiff": {},
 	".webp": {},
-	".svg":  {}, // technically text, but rarely grepped
 	".psd":  {},
 	".xcf":  {},
 	// Audio / video
