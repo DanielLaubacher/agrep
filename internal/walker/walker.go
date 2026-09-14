@@ -1,3 +1,7 @@
+// Package walker traverses directory trees with raw getdents64 and
+// parallel BFS, classifying entries via d_type (no per-file stat),
+// honoring .gitignore stacks and glob filters, and skipping binary files
+// by extension before they are ever opened.
 package walker
 
 import (

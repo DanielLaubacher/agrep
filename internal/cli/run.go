@@ -1,3 +1,8 @@
+// Package cli wires the gogrep pipeline together: it turns a parsed
+// Config into a running search, selecting one of four modes (stdin,
+// explicit files, recursive walk, watch) and connecting the walker,
+// scheduler, matchers, and output stages. Large single files are searched
+// in parallel line-aligned chunks (see parallel.go).
 package cli
 
 import (

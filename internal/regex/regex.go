@@ -49,12 +49,12 @@ const (
 
 // Compile parses a regular expression and returns a Regexp object.
 func Compile(pattern string) (*Regexp, error) {
-	return compile_pattern(pattern, syntax.Perl)
+	return compilePattern(pattern, syntax.Perl)
 }
 
 // CompilePOSIX parses a POSIX regular expression.
 func CompilePOSIX(pattern string) (*Regexp, error) {
-	return compile_pattern(pattern, syntax.POSIX)
+	return compilePattern(pattern, syntax.POSIX)
 }
 
 // MustCompile is like Compile but panics on error.
@@ -66,7 +66,7 @@ func MustCompile(pattern string) *Regexp {
 	return re
 }
 
-func compile_pattern(pattern string, baseFlags syntax.Flags) (*Regexp, error) {
+func compilePattern(pattern string, baseFlags syntax.Flags) (*Regexp, error) {
 	flags := baseFlags
 	re, err := syntax.Parse(pattern, flags)
 	if err != nil {

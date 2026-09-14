@@ -1,3 +1,7 @@
+// Package output formats and writes search results: text and JSON Lines
+// formatters, a writev-based writer, and an OrderedWriter that restores
+// deterministic ordering across parallel workers while batching output
+// into large flushes.
 package output
 
 // Formatter formats a Result into bytes for output.

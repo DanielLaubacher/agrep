@@ -1,3 +1,6 @@
+// Package scheduler distributes files from the walker across a worker
+// pool (NumCPU*2 goroutines), each reading and matching independently and
+// emitting sequence-numbered results for ordered output.
 package scheduler
 
 import (

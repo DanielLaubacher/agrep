@@ -17,7 +17,8 @@ Built vibe coding with [Claude Code](https://claude.com/claude-code).
 - **Memory-mapped I/O** — large files are mmap'd with `MADV_SEQUENTIAL` + `FADV_SEQUENTIAL` for zero-copy search (demand-paged, no `MAP_POPULATE`, enabling early exit for `-l` mode)
 - **Raw syscalls** — `getdents64`, `open`, `pread`, `mmap`, `writev`, `inotify`, `epoll` — no portable Go abstractions
 - **Parallel recursive search** — worker pool distributes files across `NumCPU * 2` goroutines with deterministic output ordering
-- **Multiple pattern engines** — Go regex (RE2), PCRE2 (pure Go port), Boyer-Moore with SIMD, Aho-Corasick multi-pattern
+- **Multiple pattern engines** — custom lazy-DFA regex engine with SIMD prefilters, Boyer-Moore with SIMD, rare-pair Teddy multi-pattern (2-8 fixed patterns), Aho-Corasick for larger sets, optional PCRE2 (pure Go port, `make build-pcre`)
+- **Parallel everywhere** — recursive searches fan out across a worker pool, and large single files are searched in parallel line-aligned chunks
 - **Regex pipeline** (`-t`/`-o`) — chain patterns with different engines; SIMD fixed-string stages eliminate lines before expensive regex runs
 - **Multi-literal prefilter** — regex AST analysis extracts all required literals for cascaded SIMD rejection before the regex engine runs
 - **Watch mode** — inotify + epoll file watching with log rotation handling
@@ -87,11 +88,11 @@ gogrep -rin "fixme" ./src/
 # Fixed string with SIMD acceleration
 gogrep -F "[ERROR]" app.log
 
-# Multiple patterns (Aho-Corasick)
+# Multiple patterns (one SIMD Teddy scan)
 gogrep -F -e "timeout" -e "refused" -e "EOF" app.log
 
-# PCRE2 regex with lookbehind
-gogrep -P '(?<=error:\s)\w+' app.log
+# PCRE2 regex with lookbehind (requires the pcre build: make build-pcre)
+gogrep-pcre -P '(?<=error:\s)\w+' app.log
 
 # Regex pipeline: SIMD prefilter → extract digits (like grep|grep -o)
 gogrep -Fe 'ERROR' -toe '\d+' app.log
@@ -114,9 +115,22 @@ gogrep --json "error" app.log
 
 See [help.md](help.md) for the full flag reference and more examples.
 
+## Performance
+
+gogrep wins or ties ripgrep on every workload in its benchmark suite (up
+to 10.9x faster on single-file counts, ~1.5x on recursive `-l`). See the
+measured table in [architecture.md](architecture.md#performance-vs-ripgrep)
+and the full optimization history in `education/`.
+
+```sh
+# Build the pcre-less binary and race through a tree
+make build
+./bin/gogrep -rn 'ERROR.*timeout' /var/log
+```
+
 ## Architecture
 
-See [architecture.md](architecture.md) for detailed design documentation covering the pipeline, syscall usage, SIMD algorithms, concurrency model, and key constants.
+See [architecture.md](architecture.md) for detailed design documentation covering the pipeline, syscall usage, SIMD algorithms, concurrency model, and key constants. The `education/` directory contains in-depth writeups of every subsystem and the ripgrep-gap optimization campaign.
 
 ## License
 

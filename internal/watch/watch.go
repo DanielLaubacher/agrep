@@ -1,3 +1,6 @@
+// Package watch implements --watch mode with raw inotify + epoll: it
+// tails watched files, reads only newly appended content via pread from
+// the last offset, and handles truncation (log rotation) by resetting.
 package watch
 
 import (

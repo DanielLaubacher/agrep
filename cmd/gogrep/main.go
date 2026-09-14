@@ -1,340 +1,33 @@
+// Gogrep is a high-performance, Linux-only grep alternative.
+//
+// It searches files and directories for patterns using SIMD-accelerated
+// fixed-string search, a custom lazy-DFA regex engine, and raw Linux
+// syscalls throughout. See the repository's architecture.md for design
+// details and flags.go for the command-line surface.
+//
+// Exit codes follow grep convention: 0 = match found, 1 = no match,
+// 2 = error.
 package main
 
 import (
-	"fmt"
 	"os"
 	"os/signal"
 	"runtime"
 	"runtime/debug"
 	"runtime/pprof"
-	"strings"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/dl/gogrep/internal/cli"
 )
 
-const usage = `Usage: gogrep [OPTIONS] PATTERN [FILE...]
-
-A high-performance, Linux-focused search tool for pattern matching in files.
-
-Options:
-  -e, --regexp PATTERN     Pattern to match (can be specified multiple times)
-  -F, --fixed-strings      Interpret pattern as fixed string, not regex
-  -P, --perl-regexp        Interpret pattern as PCRE2 regex
-  -t, --pipe               Pipe matched text into the next -e pattern
-  -o, --only-matching      Print only the matched part of the line
-  -i, --ignore-case        Case-insensitive matching
-  -S, --smart-case         Case-insensitive if pattern is all lowercase
-  -v, --invert-match       Select non-matching lines
-  -n, --line-number        Print line numbers
-  -c, --count              Print only match count per file
-  -l, --files-with-matches Print only filenames with matches
-  -r, --recursive          Recursively search directories
-      --json               Output results as JSON Lines
-  -B, --before-context NUM Print NUM lines before match
-  -A, --after-context NUM  Print NUM lines after match
-  -C, --context NUM        Print NUM lines before and after match
-  -M, --max-columns NUM    Truncate lines longer than NUM bytes (0=auto, -1=no limit)
-      --color MODE         Use color: always, never, auto (default: auto)
-      --colour MODE        Alias for --color
-  -g, --glob PATTERN       Include/exclude files by glob (prefix ! to exclude)
-      --no-ignore          Don't respect .gitignore files
-      --hidden             Search hidden files and directories
-  -L, --follow             Follow symbolic links
-      --watch              Watch files for changes and search new content
-  -h, --help               Show this help
-
-Pipeline:
-  Flags -F, -P, -t, -o are per-stage modifiers that apply to the next -e.
-  Use -t to pipe matched text from one pattern into the next (match narrowing).
-  Combine short flags freely: -Ftoe 'pattern' = fixed + pipe + only-match.
-
-  Examples:
-    gogrep -Fe 'ERROR' -toe '\d+'          # SIMD prefilter, then extract digits
-    gogrep -Fe 'HTTP' -te 'status=\d+' -toe '\d+'  # three-stage narrowing
-    gogrep -oe '\d+' file.log              # only-matching (like grep -o)
-`
-
 func main() {
-	var cfg cli.Config
-	var colorFlag string
-	var contextLines int
-	var cpuprofile string
-	var memprofile string
-	var showHelp bool
-
-	// Per-stage modifier accumulators (reset after each -e)
-	var stageFixed bool
-	var stagePCRE bool
-	var stagePipe bool
-	var stageOnly bool
-
-	// Track whether -e was used explicitly
-	explicitE := false
-
-	// Merge config file args with CLI args
-	cliArgs := os.Args[1:]
-	if configArgs := cli.LoadConfigArgs(); len(configArgs) > 0 {
-		cliArgs = append(configArgs, cliArgs...)
-	}
-
-	// Manual flag parsing to support both -x and --xxx forms, plus positional args
-	var positional []string
-	for i := 0; i < len(cliArgs); i++ {
-		arg := cliArgs[i]
-
-		// Stop flag parsing at "--"
-		if arg == "--" {
-			positional = append(positional, cliArgs[i+1:]...)
-			break
-		}
-
-		// Not a flag — positional arg
-		if !strings.HasPrefix(arg, "-") {
-			positional = append(positional, arg)
-			continue
-		}
-
-		// Parse flag=value form
-		key, val, hasEq := splitFlag(arg)
-
-		// Helper to get value: either from =val or next arg
-		nextVal := func() (string, bool) {
-			if hasEq {
-				return val, true
-			}
-			if i+1 < len(cliArgs) {
-				i++
-				return cliArgs[i], true
-			}
-			return "", false
-		}
-
-		switch key {
-		case "-e", "--regexp":
-			v, ok := nextVal()
-			if !ok {
-				die("flag %s requires a value", key)
-			}
-			explicitE = true
-
-			stage := cli.StageConfig{
-				Pattern:   v,
-				Fixed:     stageFixed,
-				PCRE:      stagePCRE,
-				Pipe:      stagePipe,
-				OnlyMatch: stageOnly,
-			}
-
-			if stagePipe {
-				// Append to current pipeline
-				if len(cfg.Pipelines) == 0 {
-					die("-t on first pattern has nothing to pipe from")
-				}
-				last := len(cfg.Pipelines) - 1
-				cfg.Pipelines[last] = append(cfg.Pipelines[last], stage)
-			} else {
-				// Start a new pipeline (OR branch)
-				cfg.Pipelines = append(cfg.Pipelines, []cli.StageConfig{stage})
-			}
-
-			// Also populate legacy Patterns for backwards compat
-			cfg.Patterns = append(cfg.Patterns, v)
-
-			// Reset per-stage modifiers
-			stageFixed = false
-			stagePCRE = false
-			stagePipe = false
-			stageOnly = false
-
-		case "-g", "--glob":
-			v, ok := nextVal()
-			if !ok {
-				die("flag %s requires a value", key)
-			}
-			cfg.Globs = append(cfg.Globs, v)
-		case "-F", "--fixed-strings":
-			stageFixed = true
-		case "-P", "--perl-regexp":
-			stagePCRE = true
-		case "-t", "--pipe":
-			stagePipe = true
-		case "-o", "--only-matching":
-			stageOnly = true
-		case "-i", "--ignore-case":
-			cfg.IgnoreCase = true
-		case "-S", "--smart-case":
-			cfg.SmartCase = true
-		case "-v", "--invert-match":
-			cfg.Invert = true
-		case "-n", "--line-number":
-			cfg.LineNumbers = true
-		case "-c", "--count":
-			cfg.CountOnly = true
-		case "-l", "--files-with-matches":
-			cfg.FileNamesOnly = true
-		case "-r", "--recursive":
-			cfg.Recursive = true
-		case "--json":
-			cfg.JSONOutput = true
-		case "--no-ignore":
-			cfg.NoIgnore = true
-		case "--hidden":
-			cfg.Hidden = true
-		case "-L", "--follow":
-			cfg.FollowSymlinks = true
-		case "--watch":
-			cfg.WatchMode = true
-		case "-h", "--help":
-			showHelp = true
-		case "-B", "--before-context":
-			v, ok := nextVal()
-			if !ok {
-				die("flag %s requires a value", key)
-			}
-			cfg.ContextBefore = atoi(v, key)
-		case "-A", "--after-context":
-			v, ok := nextVal()
-			if !ok {
-				die("flag %s requires a value", key)
-			}
-			cfg.ContextAfter = atoi(v, key)
-		case "-C", "--context":
-			v, ok := nextVal()
-			if !ok {
-				die("flag %s requires a value", key)
-			}
-			contextLines = atoi(v, key)
-		case "-M", "--max-columns":
-			v, ok := nextVal()
-			if !ok {
-				die("flag %s requires a value", key)
-			}
-			cfg.MaxColumns = atoi(v, key)
-		case "--color", "--colour":
-			v, ok := nextVal()
-			if !ok {
-				die("flag %s requires a value", key)
-			}
-			colorFlag = v
-		case "--cpuprofile":
-			v, ok := nextVal()
-			if !ok {
-				die("flag %s requires a value", key)
-			}
-			cpuprofile = v
-		case "--memprofile":
-			v, ok := nextVal()
-			if !ok {
-				die("flag %s requires a value", key)
-			}
-			memprofile = v
-		default:
-			// Try to expand combined short flags like -rin, -Ftoe, -il
-			if len(key) > 2 && key[0] == '-' && key[1] != '-' {
-				// Expand: inject individual flags back
-				expanded := make([]string, 0, len(key)-1)
-				for _, ch := range key[1:] {
-					expanded = append(expanded, "-"+string(ch))
-				}
-				// Replace current position with expanded flags
-				rest := make([]string, 0, len(expanded)+len(cliArgs)-i-1)
-				rest = append(rest, expanded...)
-				rest = append(rest, cliArgs[i+1:]...)
-				cliArgs = append(cliArgs[:i], rest...)
-				i-- // re-process from current position
-				continue
-			}
-			die("unknown flag: %s", key)
-		}
-	}
-
-	if showHelp {
-		fmt.Print(usage)
-		os.Exit(0)
-	}
-
-	// Parse positional args: first arg is pattern (if -e not used), rest are files
-	if !explicitE {
-		if len(positional) == 0 {
-			fmt.Print(usage)
-			os.Exit(0)
-		}
-		pattern := positional[0]
-		cfg.Patterns = []string{pattern}
-		cfg.Paths = positional[1:]
-
-		// Build pipeline from positional pattern with accumulated modifiers
-		stage := cli.StageConfig{
-			Pattern:   pattern,
-			Fixed:     stageFixed,
-			PCRE:      stagePCRE,
-			OnlyMatch: stageOnly,
-		}
-		cfg.Pipelines = [][]cli.StageConfig{{stage}}
-	} else {
-		cfg.Paths = positional
-	}
-
-	// Set legacy Fixed/PCRE for backwards compat (single pipeline, single stage)
-	if len(cfg.Pipelines) == 1 && len(cfg.Pipelines[0]) == 1 {
-		cfg.Fixed = cfg.Pipelines[0][0].Fixed
-		cfg.PCRE = cfg.Pipelines[0][0].PCRE
-		cfg.OnlyMatch = cfg.Pipelines[0][0].OnlyMatch
-	}
-
-	// Auto-recurse: if any path is a directory, enable recursive mode.
-	// If no paths given and stdin is a terminal, default to current directory.
-	if len(cfg.Paths) == 0 && !cfg.WatchMode {
-		if isTerminal(unix.Stdin) {
-			cfg.Paths = []string{"."}
-			cfg.Recursive = true
-		}
-	}
-	if !cfg.Recursive {
-		for _, p := range cfg.Paths {
-			var stat unix.Stat_t
-			if unix.Stat(p, &stat) == nil && stat.Mode&unix.S_IFMT == unix.S_IFDIR {
-				cfg.Recursive = true
-				break
-			}
-		}
-	}
-
-	// Handle -C (sets both before and after)
-	if contextLines > 0 {
-		if cfg.ContextBefore == 0 {
-			cfg.ContextBefore = contextLines
-		}
-		if cfg.ContextAfter == 0 {
-			cfg.ContextAfter = contextLines
-		}
-	}
-
-	// Parse color mode
-	switch colorFlag {
-	case "always":
-		cfg.Color = cli.ColorAlways
-	case "never":
-		cfg.Color = cli.ColorNever
-	default:
-		cfg.Color = cli.ColorAuto
-	}
-
-	// Set defaults
-	if cfg.MmapThreshold == 0 {
-		cfg.MmapThreshold = 8 * 1024 * 1024 // 8MB
-	}
-
-	if err := cfg.Validate(); err != nil {
-		die("%v", err)
-	}
+	cfg, prof := parseArgs(os.Args[1:])
 
 	// CPU profiling support
 	var profileFile *os.File
-	if cpuprofile != "" {
-		f, err := os.Create(cpuprofile)
+	if prof.cpu != "" {
+		f, err := os.Create(prof.cpu)
 		if err != nil {
 			die("cpuprofile: %v", err)
 		}
@@ -368,8 +61,8 @@ func main() {
 		pprof.StopCPUProfile()
 		profileFile.Close()
 	}
-	if memprofile != "" {
-		f, err := os.Create(memprofile)
+	if prof.mem != "" {
+		f, err := os.Create(prof.mem)
 		if err == nil {
 			runtime.GC()
 			pprof.WriteHeapProfile(f)
@@ -377,43 +70,4 @@ func main() {
 		}
 	}
 	os.Exit(exitCode)
-}
-
-func isTerminal(fd int) bool {
-	_, err := unix.IoctlGetTermios(fd, unix.TCGETS)
-	return err == nil
-}
-
-// splitFlag splits "--flag=value" into ("--flag", "value", true)
-// or returns ("--flag", "", false) if no = present.
-func splitFlag(arg string) (string, string, bool) {
-	if before, after, ok := strings.Cut(arg, "="); ok {
-		return before, after, true
-	}
-	return arg, "", false
-}
-
-func atoi(s string, flag string) int {
-	n := 0
-	neg := false
-	i := 0
-	if len(s) > 0 && s[0] == '-' {
-		neg = true
-		i = 1
-	}
-	for ; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			die("invalid integer value %q for flag %s", s, flag)
-		}
-		n = n*10 + int(s[i]-'0')
-	}
-	if neg {
-		n = -n
-	}
-	return n
-}
-
-func die(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "gogrep: "+format+"\n", args...)
-	os.Exit(2)
 }

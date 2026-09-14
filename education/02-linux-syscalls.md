@@ -1540,7 +1540,7 @@ alignment by reading individual bytes.
 ## io_uring -- When "Faster" Syscalls Are Actually Slower
 
 gogrep includes a complete pure-Go io_uring wrapper at
-`internal/uring/`. It was built, benchmarked extensively,
+`internal/uring/` (since removed from the tree — see git history; findings preserved below). It was built, benchmarked extensively,
 and found to be **1.3x to 3.6x slower** than direct syscalls for grep
 workloads. This section explains what io_uring is, how the wrapper works, and
 why it lost.

@@ -1,3 +1,8 @@
+// Package matcher implements gogrep's pattern-matching engines behind the
+// Matcher interface: SIMD Boyer-Moore for single fixed strings, rare-pair
+// Teddy and Aho-Corasick for fixed-string sets, a custom lazy-DFA regex
+// engine (internal/regex), optional PCRE2, and pipeline composition. The
+// factory in factory.go selects an engine from the pattern shape.
 package matcher
 
 // Match is a pointer-free struct representing a single matched (or context) line.
