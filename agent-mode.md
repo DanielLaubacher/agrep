@@ -23,10 +23,14 @@ learns the true size of the result set, but never floods its context.
 
 ### 2. Survey mode — `--outline [--top K]`
 Per-file aggregation instead of match lines: count of matching lines plus
-the first matching line as an exemplar, sorted by count descending,
-optionally limited to the top K files. One line per file answers "who
-talks about X" across a corpus for a few hundred output tokens. JSON mode
-emits one object per file plus a summary trailer.
+an exemplar line, sorted by count descending, optionally limited to the
+top K files. The exemplar is the file's most informative matching line,
+not merely its first — the line with the most occurrences wins, then a
+line carrying text beyond the match itself, then the earliest — because
+the literal first match in code is usually boilerplate (`package foo`).
+One line per file answers "who talks about X" across a corpus for a few
+hundred output tokens. JSON mode emits one object per file (`"exemplar"`
+field) plus a summary trailer.
 
 ### 3. Section context — `--sections`
 Every match is annotated with the nearest preceding Markdown heading —
@@ -49,7 +53,12 @@ When a search finds nothing, derive variants automatically — the
 case-insensitive form, and the word fragments of a split identifier
 (`ConnectTimeout` → `connect`, `timeout`) — probe each, and report which
 occur and how often. Turns the least informative outcome (empty output)
-into the agent's next query.
+into the agent's next query. The report is never silent: JSON lists every
+probe (zero counts included) and ends with a `suggest_summary` object;
+text always states an outcome, including "no derivable variants" and
+"none of the derived variants occur". Works with multiple `-e` patterns
+(variants are merged and deduplicated); stdin has no corpus to probe, so
+`--suggest` warns and is ignored there.
 
 ### 6. Verifiable regions — `--get-region PATH@START-END` + JSON spans
 JSON matches now carry `"span": [start, end)` (absolute byte range of the
@@ -78,5 +87,10 @@ See **indexing-daemon.md** for the full design of this phase.
 - Every feature is stateless and works on a cold tree — no setup step.
 - Human output remains grep-compatible unless an agent flag is passed.
 - JSON stays JSON-Lines: one object per line, `type` field discriminates
-  (`match`, `outline`, `summary`, `suggest`).
+  (`match`, `count`, `file`, `outline`, `summary`, `suggest`,
+  `suggest_summary`).
+- Every `--json` run ends with a `summary` trailer carrying exact totals
+  (`-c` emits `count` objects, `-l` emits `file` objects — never
+  degenerate match objects). `--batch` summaries carry per-query totals,
+  with zero-hit queries listed explicitly.
 - Budgets bound *output*, never *search*: totals reported are exact.

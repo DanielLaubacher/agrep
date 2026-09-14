@@ -43,11 +43,12 @@ Options:
 
 Agent options (see agent-mode.md):
       --max-tokens N       Budget output to ~N tokens; report what was omitted
-      --outline            Per-file survey (count + first match), busiest first
+      --outline            Per-file survey (count + exemplar line), busiest first
       --top K              Limit --outline to the K busiest files
       --sections           Annotate matches with their Markdown section heading
       --batch FILE         Run all patterns in FILE (one per line) in one pass
-      --suggest            On zero hits, probe derived variants and report counts
+      --suggest            On zero hits, probe derived variants and report
+                           counts (always reports, even when nothing occurs)
       --get-region SPAN    Print exact bytes for a "path@start-end" span id
       --use-index          Build/use a trigram index for recursive search;
                            auto-refreshed by a stat sweep on every query
