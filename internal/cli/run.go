@@ -170,7 +170,7 @@ func Run(cfg Config) int {
 
 	// Determine input sources
 	paths := cfg.Paths
-	readFromStdin := len(paths) == 0
+	readFromStdin := len(paths) == 0 && cfg.FilesFrom == ""
 
 	if cfg.WatchMode {
 		return runWatch(paths, m, formatter, w, cfg)
@@ -192,7 +192,7 @@ func Run(cfg Config) int {
 	switch {
 	case readFromStdin:
 		exitCode = runStdin(stdinReader, m, formatter, w, cfg.LineNumbers)
-	case cfg.Recursive:
+	case cfg.Recursive || cfg.FilesFrom != "":
 		exitCode = runRecursive(paths, m, reader, formatter, w, cfg, mode)
 	default:
 		exitCode = runFiles(paths, m, reader, formatter, w, mode, cfg.LineNumbers)
@@ -270,29 +270,21 @@ func runFiles(paths []string, m matcher.Matcher, reader input.Reader, formatter 
 
 func runRecursive(paths []string, m matcher.Matcher, reader input.Reader, formatter output.Formatter, w *output.Writer, cfg Config, mode searchMode) int {
 	// --use-index: source files from the trigram index (candidates +
-	// sweep-dirty) instead of walking. Falls back to the cold walk
-	// whenever the index doesn't apply.
+	// sweep-dirty) instead of walking. Falls back to fileSource
+	// (--files-from list or cold walk) whenever the index doesn't apply.
 	var fileCh <-chan walker.FileEntry
-	if cfg.UseIndex && len(paths) == 1 {
+	if cfg.UseIndex && cfg.FilesFrom == "" && len(paths) == 1 {
 		if ch, ok := indexedFileChannel(cfg, paths[0]); ok {
 			fileCh = ch
 		}
 	}
 	if fileCh == nil {
-		ch, errCh := walker.Walk(paths, walker.WalkOptions{
-			Recursive:      true,
-			NoIgnore:       cfg.NoIgnore,
-			Hidden:         cfg.Hidden,
-			FollowSymlinks: cfg.FollowSymlinks,
-			Globs:          cfg.Globs,
-		})
+		ch, err := fileSource(cfg, paths)
+		if err != nil {
+			logWarn("files-from: %v", err)
+			return 2
+		}
 		fileCh = ch
-		// Log walk errors in background
-		go func() {
-			for err := range errCh {
-				logWarn("walk: %v", err)
-			}
-		}()
 	}
 
 	// Create scheduler and run workers

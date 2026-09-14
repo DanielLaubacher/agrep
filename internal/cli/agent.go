@@ -15,7 +15,6 @@ import (
 	"github.com/dl/gogrep/internal/matcher"
 	"github.com/dl/gogrep/internal/output"
 	"github.com/dl/gogrep/internal/scheduler"
-	"github.com/dl/gogrep/internal/walker"
 )
 
 // ---------------- --get-region ----------------
@@ -133,45 +132,22 @@ func outlineFromResult(r *output.Result) (outlineEntry, bool) {
 func runOutline(paths []string, m matcher.Matcher, reader input.Reader, w *output.Writer, cfg Config, jsonOut bool) int {
 	var entries []outlineEntry
 
-	if cfg.Recursive {
-		fileCh, errCh := walker.Walk(paths, walker.WalkOptions{
-			Recursive:      true,
-			NoIgnore:       cfg.NoIgnore,
-			Hidden:         cfg.Hidden,
-			FollowSymlinks: cfg.FollowSymlinks,
-			Globs:          cfg.Globs,
-		})
-		go func() {
-			for err := range errCh {
-				logWarn("walk: %v", err)
-			}
-		}()
-		sched := scheduler.New(cfg.Workers, m, reader, false, false)
-		for r := range sched.Run(fileCh) {
-			if r.Err != nil {
-				logWarn("%s: %v", r.FilePath, r.Err)
-				continue
-			}
-			if e, ok := outlineFromResult(&r); ok {
-				entries = append(entries, e)
-			}
-			if r.Closer != nil {
-				r.Closer()
-			}
+	fileCh, err := fileSource(cfg, paths)
+	if err != nil {
+		logWarn("files-from: %v", err)
+		return 2
+	}
+	sched := scheduler.New(cfg.Workers, m, reader, false, false)
+	for r := range sched.Run(fileCh) {
+		if r.Err != nil {
+			logWarn("%s: %v", r.FilePath, r.Err)
+			continue
 		}
-	} else {
-		for _, path := range paths {
-			r := searchReader(reader, path, m, searchFull, false)
-			if r.Err != nil {
-				logWarn("%s: %v", path, r.Err)
-				continue
-			}
-			if e, ok := outlineFromResult(&r); ok {
-				entries = append(entries, e)
-			}
-			if r.Closer != nil {
-				r.Closer()
-			}
+		if e, ok := outlineFromResult(&r); ok {
+			entries = append(entries, e)
+		}
+		if r.Closer != nil {
+			r.Closer()
 		}
 	}
 
@@ -422,32 +398,15 @@ func appendSuggestReport(buf []byte, patterns []string, probes []suggestProbe, j
 func probeCount(paths []string, m matcher.Matcher, reader input.Reader, cfg Config) (lines, files int) {
 	var lineCount, fileCount atomic.Int64
 
-	if cfg.Recursive {
-		fileCh, errCh := walker.Walk(paths, walker.WalkOptions{
-			Recursive:      true,
-			NoIgnore:       cfg.NoIgnore,
-			Hidden:         cfg.Hidden,
-			FollowSymlinks: cfg.FollowSymlinks,
-			Globs:          cfg.Globs,
-		})
-		go func() {
-			for range errCh {
-			}
-		}()
-		sched := scheduler.New(cfg.Workers, m, reader, false, true)
-		for r := range sched.Run(fileCh) {
-			if r.Err == nil && r.MatchCount > 0 {
-				lineCount.Add(int64(r.MatchCount))
-				fileCount.Add(1)
-			}
-		}
-	} else {
-		for _, path := range paths {
-			r := searchReader(reader, path, m, searchCountOnly, false)
-			if r.Err == nil && r.MatchCount > 0 {
-				lineCount.Add(int64(r.MatchCount))
-				fileCount.Add(1)
-			}
+	fileCh, err := fileSource(cfg, paths)
+	if err != nil {
+		return 0, 0
+	}
+	sched := scheduler.New(cfg.Workers, m, reader, false, true)
+	for r := range sched.Run(fileCh) {
+		if r.Err == nil && r.MatchCount > 0 {
+			lineCount.Add(int64(r.MatchCount))
+			fileCount.Add(1)
 		}
 	}
 	return int(lineCount.Load()), int(fileCount.Load())

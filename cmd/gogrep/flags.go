@@ -53,6 +53,8 @@ Agent options (see agent-mode.md):
       --scope              Annotate matches with their enclosing definition
                            (func/class/def by language; headings in Markdown)
       --batch FILE         Run all patterns in FILE (one per line) in one pass
+      --files-from FILE    Search the files listed in FILE ('-' = stdin),
+                           one path per line, instead of walking
       --suggest            On zero hits, probe derived variants and report
                            counts (always reports, even when nothing occurs)
       --get-region SPAN    Print exact bytes for a "path@start-end" span id
@@ -279,6 +281,12 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 				die("flag %s requires a value", key)
 			}
 			cfg.BatchFile = v
+		case "--files-from":
+			v, ok := nextVal()
+			if !ok {
+				die("flag %s requires a value", key)
+			}
+			cfg.FilesFrom = v
 		case "--suggest":
 			cfg.Suggest = true
 		case "--ident":

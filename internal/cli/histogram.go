@@ -15,7 +15,6 @@ import (
 	"github.com/dl/gogrep/internal/matcher"
 	"github.com/dl/gogrep/internal/output"
 	"github.com/dl/gogrep/internal/scheduler"
-	"github.com/dl/gogrep/internal/walker"
 )
 
 const histogramTextMax = 120
@@ -78,8 +77,7 @@ func (h *histAccum) addResult(r *output.Result) {
 func runHistogram(paths []string, m matcher.Matcher, reader input.Reader, stdinReader input.Reader, w *output.Writer, cfg Config) int {
 	acc := newHistAccum()
 
-	switch {
-	case len(paths) == 0:
+	if len(paths) == 0 && cfg.FilesFrom == "" {
 		r := searchReader(stdinReader, "", m, searchFull, false)
 		if r.Err != nil {
 			logWarn("stdin: %v", r.Err)
@@ -89,35 +87,16 @@ func runHistogram(paths []string, m matcher.Matcher, reader input.Reader, stdinR
 		if r.Closer != nil {
 			r.Closer()
 		}
-	case cfg.Recursive:
-		fileCh, errCh := walker.Walk(paths, walker.WalkOptions{
-			Recursive:      true,
-			NoIgnore:       cfg.NoIgnore,
-			Hidden:         cfg.Hidden,
-			FollowSymlinks: cfg.FollowSymlinks,
-			Globs:          cfg.Globs,
-		})
-		go func() {
-			for err := range errCh {
-				logWarn("walk: %v", err)
-			}
-		}()
+	} else {
+		fileCh, err := fileSource(cfg, paths)
+		if err != nil {
+			logWarn("files-from: %v", err)
+			return 2
+		}
 		sched := scheduler.New(cfg.Workers, m, reader, false, false)
 		for r := range sched.Run(fileCh) {
 			if r.Err != nil {
 				logWarn("%s: %v", r.FilePath, r.Err)
-				continue
-			}
-			acc.addResult(&r)
-			if r.Closer != nil {
-				r.Closer()
-			}
-		}
-	default:
-		for _, path := range paths {
-			r := searchReader(reader, path, m, searchFull, false)
-			if r.Err != nil {
-				logWarn("%s: %v", path, r.Err)
 				continue
 			}
 			acc.addResult(&r)

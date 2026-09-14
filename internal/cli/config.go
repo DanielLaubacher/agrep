@@ -64,6 +64,7 @@ type Config struct {
 	Sections  bool   // --sections: annotate matches with Markdown headings
 	Scope     bool   // --scope: annotate matches with the enclosing definition
 	BatchFile string // --batch: file of patterns, one per line
+	FilesFrom string // --files-from: file of paths to search ('-' = stdin)
 	Suggest   bool   // --suggest: on zero hits, probe derived variants
 	GetRegion string // --get-region: print bytes for a "path@start-end" span
 

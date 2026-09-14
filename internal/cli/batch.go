@@ -17,7 +17,6 @@ import (
 	"github.com/dl/gogrep/internal/matcher"
 	"github.com/dl/gogrep/internal/output"
 	"github.com/dl/gogrep/internal/scheduler"
-	"github.com/dl/gogrep/internal/walker"
 )
 
 // loadBatchPatterns reads one pattern per line; blank lines and lines
@@ -89,34 +88,15 @@ func runBatch(cfg Config, reader input.Reader, stdinReader input.Reader, formatt
 	}
 
 	// Stdin: search the single buffer with each matcher in turn.
-	if len(cfg.Paths) == 0 {
+	if len(cfg.Paths) == 0 && cfg.FilesFrom == "" {
 		return runBatchStdin(stdinReader, matchers, patterns, formatter, w)
 	}
 
-	// Files and recursive mode share the scheduler path: feed the walker
-	// channel (recursive) or the literal paths (files).
-	var fileCh <-chan walker.FileEntry
-	if cfg.Recursive {
-		ch, errCh := walker.Walk(cfg.Paths, walker.WalkOptions{
-			Recursive:      true,
-			NoIgnore:       cfg.NoIgnore,
-			Hidden:         cfg.Hidden,
-			FollowSymlinks: cfg.FollowSymlinks,
-			Globs:          cfg.Globs,
-		})
-		go func() {
-			for err := range errCh {
-				logWarn("walk: %v", err)
-			}
-		}()
-		fileCh = ch
-	} else {
-		ch := make(chan walker.FileEntry, len(cfg.Paths))
-		for _, p := range cfg.Paths {
-			ch <- walker.FileEntry{Path: p}
-		}
-		close(ch)
-		fileCh = ch
+	// Files, recursive and --files-from modes share the scheduler path.
+	fileCh, err := fileSource(cfg, cfg.Paths)
+	if err != nil {
+		logWarn("files-from: %v", err)
+		return 2
 	}
 
 	sched := scheduler.New(cfg.Workers, nil, reader, mode == searchFilesOnly, mode == searchCountOnly)
