@@ -1,6 +1,6 @@
-# gogrep Architecture
+# agrep Architecture
 
-gogrep is a Linux-only, high-performance grep alternative written in pure Go. Every layer is designed to minimize syscalls, avoid allocations on hot paths, and exploit Linux-specific kernel features.
+agrep is a Linux-only, high-performance grep alternative written in pure Go. Every layer is designed to minimize syscalls, avoid allocations on hot paths, and exploit Linux-specific kernel features.
 
 ## Design Goals
 
@@ -14,7 +14,7 @@ gogrep is a Linux-only, high-performance grep alternative written in pure Go. Ev
 
 ```
                   +-----------+
-                  |  CLI      |  cmd/gogrep/main.go
+                  |  CLI      |  cmd/agrep/main.go
                   |           |  parses flags, builds Config
                   +-----+-----+
                         |
@@ -117,7 +117,7 @@ type Matcher interface {
 The `-t` (pipe) and `-o` (only-matching) flags enable regex composition — chaining patterns where each stage filters lines that matched the previous stage. The final stage's match positions define the output highlights.
 
 ```
-gogrep -Fe 'ERROR' -Fte 'timeout' -toe '\d+' app.log
+agrep -Fe 'ERROR' -Fte 'timeout' -toe '\d+' app.log
        ^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^
        stage 0     stage 1         stage 2
        (SIMD BM)   (SIMD BM)      (RE2, -o output)
@@ -173,7 +173,7 @@ Position-aware ordering is critical for minified files (single-line, multi-MB) w
 
 ### Rare-Pair Teddy (internal/simd/teddy.go)
 
-For sets of 2-8 fixed patterns, gogrep uses a variant of ripgrep's Teddy
+For sets of 2-8 fixed patterns, agrep uses a variant of ripgrep's Teddy
 algorithm with one structural change: instead of fingerprinting each
 pattern's **first** bytes (Teddy's weakness — sets like `{error, errno,
 errcode}` share the ultra-common prefix "er"), it probes the two **globally
@@ -317,9 +317,9 @@ parallel chunking" above).
 
 Measured 2026-09 against ripgrep 15.1.0 (29MB/500K-line corpus and
 /usr/include; hyperfine; both tools with equivalent smart-case/hidden
-config). gogrep wins or ties every benchmarked workload:
+config). agrep wins or ties every benchmarked workload:
 
-| Workload | gogrep | rg |
+| Workload | agrep | rg |
 |---|---|---|
 | `ERROR.*port [0-9]+` full output (29MB) | 6.9ms | 6.5ms (tie) |
 | `ERROR.*port [0-9]+` `-c` | **3.8ms** | 7.4ms |
@@ -350,6 +350,6 @@ and `education/11-beating-ripgrep.md`. Reproducible micro-benchmarks:
 
 **Why PCRE is opt-in**: `go.elara.ws/pcre` transitively links `modernc.org/libc`,
 whose `netdb` package init parses `/etc/services` (~300 KB) at **every process
-start** — a measured ~5 ms tax on each invocation, tripling gogrep's startup
+start** — a measured ~5 ms tax on each invocation, tripling agrep's startup
 floor. The default build stubs `-P` out with a clear error; `make build-pcre`
-produces `bin/gogrep-pcre` with full PCRE support.
+produces `bin/agrep-pcre` with full PCRE support.

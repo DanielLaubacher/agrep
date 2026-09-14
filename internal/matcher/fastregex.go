@@ -3,7 +3,7 @@ package matcher
 import (
 	"bytes"
 
-	"github.com/dl/gogrep/internal/regex"
+	"github.com/DanielLaubacher/agrep/internal/regex"
 )
 
 // FastRegexMatcher uses the internal/regex lazy DFA engine.

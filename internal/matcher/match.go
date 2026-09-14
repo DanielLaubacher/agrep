@@ -1,4 +1,4 @@
-// Package matcher implements gogrep's pattern-matching engines behind the
+// Package matcher implements agrep's pattern-matching engines behind the
 // Matcher interface: SIMD Boyer-Moore for single fixed strings, rare-pair
 // Teddy and Aho-Corasick for fixed-string sets, a custom lazy-DFA regex
 // engine (internal/regex), optional PCRE2, and pipeline composition. The

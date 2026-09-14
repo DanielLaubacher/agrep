@@ -1,8 +1,8 @@
 # Closing the ripgrep Gap: What Worked and What Didn't
 
-gogrep started **16x slower** than ripgrep on regex patterns. After building a custom lazy DFA regex engine with SIMD prefiltering, we reached **1.0-1.4x** on most patterns — competitive with ripgrep using pure safe Go. This document records every optimization we tried, what each contributed, and why several promising approaches failed.
+agrep started **16x slower** than ripgrep on regex patterns. After building a custom lazy DFA regex engine with SIMD prefiltering, we reached **1.0-1.4x** on most patterns — competitive with ripgrep using pure safe Go. This document records every optimization we tried, what each contributed, and why several promising approaches failed.
 
-> **Update**: a later round ([doc 11](11-beating-ripgrep.md)) went past parity — gogrep now wins or ties every benchmarked workload. It also fixed a concurrency bug in the lazy DFA described here (lazy transition computation raced when one Regexp was shared across scheduler workers; transitions are now fully precomputed at compile time). The final tables in section 6 below are superseded by doc 11 section 13.
+> **Update**: a later round ([doc 11](11-beating-ripgrep.md)) went past parity — agrep now wins or ties every benchmarked workload. It also fixed a concurrency bug in the lazy DFA described here (lazy transition computation raced when one Regexp was shared across scheduler workers; transitions are now fully precomputed at compile time). The final tables in section 6 below are superseded by doc 11 section 13.
 
 ---
 
@@ -21,11 +21,11 @@ gogrep started **16x slower** than ripgrep on regex patterns. After building a c
 
 ## 1. The Starting Point
 
-gogrep used Go's stdlib `regexp` package (Thompson NFA simulation). On a 29MB file with regex patterns, it was **13-16x slower** than ripgrep:
+agrep used Go's stdlib `regexp` package (Thompson NFA simulation). On a 29MB file with regex patterns, it was **13-16x slower** than ripgrep:
 
 ```
 Pattern: \d{4}-\d{2}-\d{2}
-gogrep (stdlib regexp):  ~480ms
+agrep (stdlib regexp):  ~480ms
 ripgrep:                  ~30ms
 Gap:                       16x
 ```
@@ -88,7 +88,7 @@ for _, b := range data {
 }
 ```
 
-**Result**: gogrep's `Match()` is **faster than ripgrep** on recursive searches because the forward DFA's single-pass loop amortizes well across many small files.
+**Result**: agrep's `Match()` is **faster than ripgrep** on recursive searches because the forward DFA's single-pass loop amortizes well across many small files.
 
 ### Search DFA: Position Extraction
 
@@ -244,7 +244,7 @@ Early measurements showed recording positions doubled DFA loop time (17ms → 34
 
 ### Single file (29MB, 500K lines) — pure safe Go
 
-| Pattern | gogrep | ripgrep | Gap | Started at |
+| Pattern | agrep | ripgrep | Gap | Started at |
 |---------|--------|---------|-----|------------|
 | `\d{4}-\d{2}-\d{2}` count | 42ms | 30ms | **1.4x** | 16x |
 | `ERROR.*port [0-9]+` | 57ms | 30ms | **1.9x** | 16x |
@@ -254,10 +254,10 @@ Early measurements showed recording positions doubled DFA loop time (17ms → 34
 
 ### Recursive search (2526 files, /usr/include)
 
-| Pattern | gogrep | ripgrep | Gap |
+| Pattern | agrep | ripgrep | Gap |
 |---------|--------|---------|-----|
-| `\d{4}` | **14ms** | 25ms | **gogrep 1.8x faster** |
-| `struct\s+\w+\s*\{` | **16ms** | 30ms | **gogrep 1.9x faster** |
+| `\d{4}` | **14ms** | 25ms | **agrep 1.8x faster** |
+| `struct\s+\w+\s*\{` | **16ms** | 30ms | **agrep 1.9x faster** |
 | `define` | 22ms | 16ms | 1.4x |
 
 ### Contribution by optimization

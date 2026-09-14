@@ -1,6 +1,6 @@
-# SIMD and AVX2 Acceleration in gogrep
+# SIMD and AVX2 Acceleration in agrep
 
-This document is a comprehensive reference on how gogrep uses SIMD (Single Instruction, Multiple Data) instructions -- specifically Intel AVX2 -- to accelerate byte-level pattern matching. It covers the hardware fundamentals, Go 1.26's `simd/archsimd` package, every SIMD technique used in the codebase, and the practical lessons learned about when custom SIMD helps and when it does not.
+This document is a comprehensive reference on how agrep uses SIMD (Single Instruction, Multiple Data) instructions -- specifically Intel AVX2 -- to accelerate byte-level pattern matching. It covers the hardware fundamentals, Go 1.26's `simd/archsimd` package, every SIMD technique used in the codebase, and the practical lessons learned about when custom SIMD helps and when it does not.
 
 ---
 
@@ -70,13 +70,13 @@ ZMM0  [================ 512 bits (64 bytes) ================]   AVX-512
 | YMM0-15  | 256-bit  | 32    | AVX / AVX2      | 2011/2013 (Sandy Bridge / Haswell) |
 | ZMM0-31  | 512-bit  | 64    | AVX-512         | 2017 (Skylake-X) |
 
-**YMM registers** are the workhorses of gogrep's SIMD code. Each YMM register holds 32 bytes, and AVX2 provides integer operations on all 32 bytes simultaneously. This is the sweet spot for several reasons:
+**YMM registers** are the workhorses of agrep's SIMD code. Each YMM register holds 32 bytes, and AVX2 provides integer operations on all 32 bytes simultaneously. This is the sweet spot for several reasons:
 
 - AVX2 is universally available on x86-64 processors from 2013 onward (nearly all current server and desktop hardware).
 - AVX-512 is not universally available, may cause frequency throttling on some CPUs, and provides diminishing returns for byte-level search patterns.
 - 32 bytes per iteration is enough to process data at memory bandwidth speeds for most search workloads.
 
-The key AVX2 instructions that gogrep relies on (mapped to their `archsimd` equivalents):
+The key AVX2 instructions that agrep relies on (mapped to their `archsimd` equivalents):
 
 | x86 Instruction | What it does | archsimd equivalent |
 |-----------------|-------------|---------------------|
@@ -94,7 +94,7 @@ The key AVX2 instructions that gogrep relies on (mapped to their `archsimd` equi
 
 ## 3. The Four Core SIMD Operations
 
-Every SIMD search algorithm in gogrep is built from four fundamental operations. Understanding these four operations is sufficient to understand all the SIMD code.
+Every SIMD search algorithm in agrep is built from four fundamental operations. Understanding these four operations is sufficient to understand all the SIMD code.
 
 ### 3.1 Broadcast
 
@@ -169,7 +169,7 @@ Go 1.26 introduced the experimental `simd/archsimd` package, which provides type
 
 ### Enabling SIMD
 
-All `go` commands that compile gogrep code must set the experiment flag:
+All `go` commands that compile agrep code must set the experiment flag:
 
 ```bash
 GOEXPERIMENT=simd go build ./...
@@ -177,7 +177,7 @@ GOEXPERIMENT=simd go test -race ./...
 GOEXPERIMENT=simd go test -bench=. -benchmem ./internal/simd/
 ```
 
-The gogrep Makefile sets this automatically.
+The agrep Makefile sets this automatically.
 
 ### Core Type: `archsimd.Uint8x32`
 
@@ -254,7 +254,7 @@ archsimd.ClearAVXUpperBits()  // Emits VZEROUPPER
 
 ### Rule: VZEROUPPER at Every Exit Point
 
-In gogrep, `ClearAVXUpperBits()` is called at **every code path that exits a function using AVX2 instructions**. This includes:
+In agrep, `ClearAVXUpperBits()` is called at **every code path that exits a function using AVX2 instructions**. This includes:
 - Early returns (match found)
 - Loop exits (no match)
 - Error/edge case returns
@@ -544,7 +544,7 @@ For each 32-byte chunk:
 
 This is three instructions per 32 bytes of data, plus a load -- roughly 8 bytes per clock cycle, approaching memory bandwidth limits.
 
-### Use Case in gogrep
+### Use Case in agrep
 
 The `Count` function is used to count newline characters (`'\n'`) in data buffers, which is needed for computing line numbers. When the matcher finds match offsets in a buffer, it needs to know what line number each offset falls on. Counting newlines up to each offset provides this.
 
@@ -674,7 +674,7 @@ This approach is entirely branchless within the SIMD loop. There are no conditio
 
 ## 10. Technique: First+Last Byte Prefilter -- Horspool-style SIMD
 
-This is the most important SIMD technique in gogrep and the primary source of SIMD-derived performance advantage. It accelerates **multi-byte pattern search** (especially case-insensitive) by using a two-point prefilter inspired by the Horspool string search algorithm.
+This is the most important SIMD technique in agrep and the primary source of SIMD-derived performance advantage. It accelerates **multi-byte pattern search** (especially case-insensitive) by using a two-point prefilter inspired by the Horspool string search algorithm.
 
 File: `internal/simd/index.go`, lines 123-182
 
@@ -889,7 +889,7 @@ Three iterations for three set bits, with no wasted iterations on zero bits. Thi
 
 This technique is attributed to Brian Kernighan (of K&R C fame) for counting set bits. In SIMD search code, it is adapted for **position extraction**: instead of just counting, we use `TrailingZeros32` to get the position before clearing the bit.
 
-### Where It Appears in gogrep
+### Where It Appears in agrep
 
 - `IndexCaseInsensitive`: iterates over candidate positions from the first+last byte prefilter
   (`internal/simd/index.go`, line 160-167)
@@ -974,7 +974,7 @@ When the full verification **fails** (the first+last bytes matched but the middl
 
 ## 13. Why bytes.Index Already Uses AVX2
 
-An important lesson learned during gogrep development: **Go's standard library already uses SIMD assembly for common byte operations.**
+An important lesson learned during agrep development: **Go's standard library already uses SIMD assembly for common byte operations.**
 
 ### What the Stdlib Optimizes
 
@@ -986,9 +986,9 @@ Go's `bytes` and `strings` packages include hand-written assembly (in `internal/
 
 These implementations use `PCMPESTRI` (SSE4.2), `VPCMPEQB` (AVX2), and other SIMD instructions depending on the CPU capabilities detected at startup.
 
-### gogrep's Delegation Strategy
+### agrep's Delegation Strategy
 
-For case-sensitive multi-byte search, gogrep delegates directly to `bytes.Index`:
+For case-sensitive multi-byte search, agrep delegates directly to `bytes.Index`:
 
 File: `internal/simd/index.go`, lines 12-14
 
@@ -1000,7 +1000,7 @@ func Index(data, pattern []byte) int {
 }
 ```
 
-For case-sensitive `IndexAll` (finding all occurrences), gogrep loops over `bytes.Index`:
+For case-sensitive `IndexAll` (finding all occurrences), agrep loops over `bytes.Index`:
 
 File: `internal/simd/index.go`, lines 18-63
 
@@ -1053,7 +1053,7 @@ func IndexAll(data, pattern []byte) []int {
 
 ### The Lesson
 
-**Always benchmark against the stdlib before writing custom SIMD.** The Go standard library team has invested significant effort into optimizing common operations with hand-tuned assembly. For single-byte operations like `IndexByte`, gogrep's custom AVX2 implementation performs roughly the same as the stdlib:
+**Always benchmark against the stdlib before writing custom SIMD.** The Go standard library team has invested significant effort into optimizing common operations with hand-tuned assembly. For single-byte operations like `IndexByte`, agrep's custom AVX2 implementation performs roughly the same as the stdlib:
 
 ```
 BenchmarkIndexByte_SIMD:    ~same throughput
@@ -1179,7 +1179,7 @@ The second most common case is **sparse matches** (fewer than 16 matches per fil
 - Only the final `result := make([]int, n)` allocates
 - The intermediate stack buffer avoided repeated `append` growth allocations
 
-This optimization is particularly valuable because `IndexAll` is called once per file in the search-then-split architecture. Eliminating allocations on the no-match path means that scanning 37,000 files (a typical gogrep workload) with most files not matching produces nearly zero GC pressure from the match collection code.
+This optimization is particularly valuable because `IndexAll` is called once per file in the search-then-split architecture. Eliminating allocations on the no-match path means that scanning 37,000 files (a typical agrep workload) with most files not matching produces nearly zero GC pressure from the match collection code.
 
 ---
 
@@ -1204,7 +1204,7 @@ BenchmarkIndex_SIMD_Short:   ~equivalent to stdlib (delegates to bytes.Index)
 BenchmarkIndex_Stdlib_Short: ~equivalent to SIMD
 BenchmarkIndex_SIMD_NoMatch: ~equivalent to stdlib
 ```
-Lesson: Same as above. `bytes.Index` is already highly optimized. gogrep correctly delegates to it.
+Lesson: Same as above. `bytes.Index` is already highly optimized. agrep correctly delegates to it.
 
 **Case-insensitive search (the SIMD win):**
 ```
@@ -1226,7 +1226,7 @@ The NoMatch and SparseMatch numbers approach memory bandwidth. The SIMD code pro
 ### End-to-End Against ripgrep (37K files)
 
 ```
-gogrep:  ~304ms (--no-ignore --hidden -l)
+agrep:  ~304ms (--no-ignore --hidden -l)
 rg:      ~301ms (same flags)
 ```
 
@@ -1234,11 +1234,11 @@ Performance is essentially tied with ripgrep (written in Rust with hand-tuned SI
 
 For case-insensitive search:
 ```
-gogrep:  ~144ms (-i -l on /usr/include for "define")
+agrep:  ~144ms (-i -l on /usr/include for "define")
 rg:      ~180ms (same)
 ```
 
-gogrep is 1.25x faster for case-insensitive fixed-string search, which is the workload where the custom Horspool-style SIMD prefilter has the most impact.
+agrep is 1.25x faster for case-insensitive fixed-string search, which is the workload where the custom Horspool-style SIMD prefilter has the most impact.
 
 ### Summary of Lessons
 

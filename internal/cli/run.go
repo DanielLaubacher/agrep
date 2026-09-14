@@ -1,4 +1,4 @@
-// Package cli wires the gogrep pipeline together: it turns a parsed
+// Package cli wires the agrep pipeline together: it turns a parsed
 // Config into a running search, selecting one of four modes (stdin,
 // explicit files, recursive walk, watch) and connecting the walker,
 // scheduler, matchers, and output stages. Large single files are searched
@@ -11,17 +11,17 @@ import (
 	"sync/atomic"
 	"unicode"
 
-	"github.com/dl/gogrep/internal/input"
-	"github.com/dl/gogrep/internal/matcher"
-	"github.com/dl/gogrep/internal/output"
-	"github.com/dl/gogrep/internal/scheduler"
-	"github.com/dl/gogrep/internal/walker"
-	"github.com/dl/gogrep/internal/watch"
+	"github.com/DanielLaubacher/agrep/internal/input"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/output"
+	"github.com/DanielLaubacher/agrep/internal/scheduler"
+	"github.com/DanielLaubacher/agrep/internal/walker"
+	"github.com/DanielLaubacher/agrep/internal/watch"
 )
 
 // logWarn writes a warning to stderr.
 func logWarn(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "gogrep: "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, "agrep: "+format+"\n", args...)
 }
 
 // searchMode determines the fast path in searchReader.

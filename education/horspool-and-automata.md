@@ -2,7 +2,7 @@
 
 This article covers two foundational algorithms from first principles: the Boyer-Moore-Horspool algorithm for fixed-string search, and finite automata (NFA, DFA, lazy DFA) for regex matching. Both are central to how grep tools work. The goal is to build intuition for *why* these algorithms are fast, not just *what* they do -- covering the shift tables, state transitions, proofs of correctness, and the fundamental trade-offs that determine performance.
 
-This article focuses on the algorithms themselves. For how gogrep implements them with SIMD and AVX2, see [01: SIMD and AVX2](01-simd-and-avx2.md). For the code-level walkthrough of gogrep's matchers, see [04: String Search Algorithms](04-string-search-algorithms.md). For competitive benchmarks against ripgrep and the prefilter cascade, see [08: Regex Engines and Prefilters](08-regex-engines-and-prefilters.md).
+This article focuses on the algorithms themselves. For how agrep implements them with SIMD and AVX2, see [01: SIMD and AVX2](01-simd-and-avx2.md). For the code-level walkthrough of agrep's matchers, see [04: String Search Algorithms](04-string-search-algorithms.md). For competitive benchmarks against ripgrep and the prefilter cascade, see [08: Regex Engines and Prefilters](08-regex-engines-and-prefilters.md).
 
 ---
 
@@ -443,7 +443,7 @@ Boyer-Moore's good suffix rule guarantees that the worst case is O(n) (or O(n + 
 
 ## From Horspool to SIMD Prefilter
 
-Classical Horspool processes one text position at a time. gogrep's SIMD prefilter adapts the core idea to process 32 positions simultaneously.
+Classical Horspool processes one text position at a time. agrep's SIMD prefilter adapts the core idea to process 32 positions simultaneously.
 
 The connection: Horspool checks `T[i + m - 1]` (the last-aligned character) to decide whether position `i` is worth checking. This is a **two-byte probe** -- checking the first and last bytes of the potential match window.
 
@@ -1081,7 +1081,7 @@ Building a fast grep tool requires navigating several interconnected trade-offs:
 
 For literal patterns (no metacharacters), Horspool or SIMD prefilters achieve throughputs of 10+ GB/s. The algorithm is simple, the implementation is cache-friendly, and SIMD allows 32 bytes per cycle.
 
-gogrep exploits this: the `isLiteral()` check in `factory.go` routes literal patterns to `BoyerMooreMatcher`, bypassing the regex engine entirely. This is why `gogrep "define"` runs at SIMD speed.
+agrep exploits this: the `isLiteral()` check in `factory.go` routes literal patterns to `BoyerMooreMatcher`, bypassing the regex engine entirely. This is why `agrep "define"` runs at SIMD speed.
 
 ### The Regex Slow Path
 
@@ -1095,7 +1095,7 @@ For patterns with metacharacters, the engine must build an automaton. The choice
 
 ### The Prefilter Bridge
 
-The 16x gap between gogrep and ripgrep on regex patterns (documented in [08: Regex Engines and Prefilters](08-regex-engines-and-prefilters.md)) comes from ripgrep using SIMD prefilters to skip non-matching regions before engaging the automaton. This bridges the fixed-string and regex worlds:
+The 16x gap between agrep and ripgrep on regex patterns (documented in [08: Regex Engines and Prefilters](08-regex-engines-and-prefilters.md)) comes from ripgrep using SIMD prefilters to skip non-matching regions before engaging the automaton. This bridges the fixed-string and regex worlds:
 
 1. Extract a required literal from the regex (e.g., `"err"` from `err(or|no|code)`).
 2. Search for the literal at SIMD speed (10+ GB/s).
@@ -1126,9 +1126,9 @@ Each step down in the hierarchy represents roughly a 2-10x slowdown. The art of 
 ## Cross-References
 
 - [01: SIMD and AVX2](01-simd-and-avx2.md) -- The AVX2 implementation of the Horspool-style first+last byte prefilter discussed in "From Horspool to SIMD Prefilter." Also covers `BroadcastUint8x32`, `VPCMPEQB`, `VPMOVMSKB`, and Kernighan's trick for bitmask iteration.
-- [04: String Search Algorithms](04-string-search-algorithms.md) -- Code-level walkthrough of gogrep's `BoyerMooreMatcher`, `AhoCorasickMatcher`, `RegexMatcher`, and `PCREMatcher`, including the search-then-split architecture and the `Matcher` interface.
-- [06: GC and Allocation Optimization](06-gc-and-allocation-optimization.md) -- How gogrep's pointer-free `Match` struct and `[][2]int` positions eliminate GC pressure in the matcher hot path.
-- [08: Regex Engines and Prefilters](08-regex-engines-and-prefilters.md) -- Competitive analysis of gogrep vs ripgrep, the Teddy SIMD multi-pattern algorithm, literal extraction from regex ASTs, and the prefilter cascade. Builds on the automata theory in this article to explain the benchmark results.
+- [04: String Search Algorithms](04-string-search-algorithms.md) -- Code-level walkthrough of agrep's `BoyerMooreMatcher`, `AhoCorasickMatcher`, `RegexMatcher`, and `PCREMatcher`, including the search-then-split architecture and the `Matcher` interface.
+- [06: GC and Allocation Optimization](06-gc-and-allocation-optimization.md) -- How agrep's pointer-free `Match` struct and `[][2]int` positions eliminate GC pressure in the matcher hot path.
+- [08: Regex Engines and Prefilters](08-regex-engines-and-prefilters.md) -- Competitive analysis of agrep vs ripgrep, the Teddy SIMD multi-pattern algorithm, literal extraction from regex ASTs, and the prefilter cascade. Builds on the automata theory in this article to explain the benchmark results.
 
 ### Foundational Papers
 

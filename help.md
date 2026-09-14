@@ -1,10 +1,10 @@
-# gogrep Usage
+# agrep Usage
 
 ## Synopsis
 
 ```
-gogrep [OPTIONS] PATTERN [FILE...]
-gogrep [OPTIONS] -e PATTERN [-e PATTERN...] [FILE...]
+agrep [OPTIONS] PATTERN [FILE...]
+agrep [OPTIONS] -e PATTERN [-e PATTERN...] [FILE...]
 ```
 
 If no files are given and stdin is a terminal, searches the current directory recursively. If stdin is piped, reads from stdin. Use `--` to separate flags from patterns that start with `-`.
@@ -74,19 +74,19 @@ Short flags can be combined: `-rin` is equivalent to `-r -i -n`.
 Search for a pattern in a file:
 
 ```sh
-gogrep "error" app.log
+agrep "error" app.log
 ```
 
 Search stdin:
 
 ```sh
-cat app.log | gogrep "timeout"
+cat app.log | agrep "timeout"
 ```
 
 ### Case-Insensitive Search
 
 ```sh
-gogrep -i "warning" app.log
+agrep -i "warning" app.log
 ```
 
 ### Fixed String Search
@@ -94,13 +94,13 @@ gogrep -i "warning" app.log
 Treat the pattern as a literal string (no regex metacharacters):
 
 ```sh
-gogrep -F "[ERROR]" app.log
+agrep -F "[ERROR]" app.log
 ```
 
 ### Line Numbers
 
 ```sh
-gogrep -n "TODO" src/*.go
+agrep -n "TODO" src/*.go
 ```
 
 ### Recursive Search
@@ -108,7 +108,7 @@ gogrep -n "TODO" src/*.go
 Search all files in a directory tree:
 
 ```sh
-gogrep -rn "func main" ./src/
+agrep -rn "func main" ./src/
 ```
 
 ### Invert Match
@@ -116,13 +116,13 @@ gogrep -rn "func main" ./src/
 Show lines that do NOT contain the pattern:
 
 ```sh
-gogrep -v "DEBUG" app.log
+agrep -v "DEBUG" app.log
 ```
 
 ### Count Matches
 
 ```sh
-gogrep -c "error" *.log
+agrep -c "error" *.log
 ```
 
 ### Files With Matches
@@ -130,7 +130,7 @@ gogrep -c "error" *.log
 List only filenames that contain a match:
 
 ```sh
-gogrep -rl "TODO" ./src/
+agrep -rl "TODO" ./src/
 ```
 
 ### Context Lines
@@ -138,13 +138,13 @@ gogrep -rl "TODO" ./src/
 Show 2 lines before and after each match:
 
 ```sh
-gogrep -C2 "panic" app.log
+agrep -C2 "panic" app.log
 ```
 
 Show 3 lines after each match:
 
 ```sh
-gogrep -A3 "FATAL" app.log
+agrep -A3 "FATAL" app.log
 ```
 
 ### Multiple Patterns
@@ -152,13 +152,13 @@ gogrep -A3 "FATAL" app.log
 Search for any of several patterns:
 
 ```sh
-gogrep -e "error" -e "warning" -e "fatal" app.log
+agrep -e "error" -e "warning" -e "fatal" app.log
 ```
 
 Multiple fixed strings (uses Aho-Corasick for single-pass matching):
 
 ```sh
-gogrep -F -e "connection refused" -e "timeout" -e "EOF" app.log
+agrep -F -e "connection refused" -e "timeout" -e "EOF" app.log
 ```
 
 ### PCRE2 Regex
@@ -167,13 +167,13 @@ Use Perl-compatible regex for lookahead, lookbehind, backreferences:
 
 ```sh
 # Lookahead: words followed by "world"
-gogrep -P '\w+(?=\s+world)' file.txt
+agrep -P '\w+(?=\s+world)' file.txt
 
 # Lookbehind: words preceded by "hello "
-gogrep -P '(?<=hello\s)\w+' file.txt
+agrep -P '(?<=hello\s)\w+' file.txt
 
 # Backreference: repeated words
-gogrep -Pn '(\w+)\s+\1' document.txt
+agrep -Pn '(\w+)\s+\1' document.txt
 ```
 
 ### JSON Output
@@ -181,7 +181,7 @@ gogrep -Pn '(\w+)\s+\1' document.txt
 Output matches as JSON Lines (one JSON object per match):
 
 ```sh
-gogrep --json "error" app.log
+agrep --json "error" app.log
 ```
 
 ```json
@@ -193,13 +193,13 @@ gogrep --json "error" app.log
 Watch files for changes and search new content as it's appended:
 
 ```sh
-gogrep --watch "ERROR" /var/log/syslog
+agrep --watch "ERROR" /var/log/syslog
 ```
 
 Watch multiple files:
 
 ```sh
-gogrep --watch "panic" app.log worker.log
+agrep --watch "panic" app.log worker.log
 ```
 
 ### Color Control
@@ -207,13 +207,13 @@ gogrep --watch "panic" app.log worker.log
 Force color output (useful when piping to `less -R`):
 
 ```sh
-gogrep --color=always "pattern" file.txt | less -R
+agrep --color=always "pattern" file.txt | less -R
 ```
 
 Disable color:
 
 ```sh
-gogrep --color=never "pattern" file.txt
+agrep --color=never "pattern" file.txt
 ```
 
 ### Combined Flags
@@ -221,13 +221,13 @@ gogrep --color=never "pattern" file.txt
 Recursive, case-insensitive, with line numbers and context:
 
 ```sh
-gogrep -rinC3 "fixme" ./src/
+agrep -rinC3 "fixme" ./src/
 ```
 
 Count fixed-string matches per file recursively:
 
 ```sh
-gogrep -rFc "TODO" ./src/
+agrep -rFc "TODO" ./src/
 ```
 
 ### Only Matching (-o)
@@ -235,7 +235,7 @@ gogrep -rFc "TODO" ./src/
 Print only the matched portion of each line (like `grep -o`):
 
 ```sh
-gogrep -oe '\d+' app.log
+agrep -oe '\d+' app.log
 # 503
 # 200
 # 42
@@ -247,7 +247,7 @@ Chain patterns with `-t` to filter lines through multiple stages. Each stage mus
 
 ```sh
 # SIMD fixed-string prefilter, then extract digits
-gogrep -Fe 'ERROR' -toe '\d+' app.log
+agrep -Fe 'ERROR' -toe '\d+' app.log
 # 503
 # 200
 ```
@@ -257,7 +257,7 @@ This is equivalent to `grep 'ERROR' app.log | grep -o '\d+'` but runs in a singl
 Three-stage narrowing — each stage can use a different engine:
 
 ```sh
-gogrep -Fe 'HTTP' -te 'status=\d+' -toe 'status=\d+' access.log
+agrep -Fe 'HTTP' -te 'status=\d+' -toe 'status=\d+' access.log
 # status=200
 # status=503
 ```
@@ -265,7 +265,7 @@ gogrep -Fe 'HTTP' -te 'status=\d+' -toe 'status=\d+' access.log
 Mix fixed-string SIMD stages with regex or PCRE:
 
 ```sh
-gogrep -Fe 'ERROR' -Fte 'prod-' -Fte 'timeout' -toe '\d+' app.log
+agrep -Fe 'ERROR' -Fte 'prod-' -Fte 'timeout' -toe '\d+' app.log
 ```
 
 Multiple OR branches, each with their own pipeline:
@@ -273,23 +273,23 @@ Multiple OR branches, each with their own pipeline:
 ```sh
 # Branch 1: ERROR lines → extract digits
 # Branch 2: WARN lines (no pipeline)
-gogrep -Fe 'ERROR' -toe '\d+' -Fe 'WARN' app.log
+agrep -Fe 'ERROR' -toe '\d+' -Fe 'WARN' app.log
 ```
 
 `-e` without a preceding `-t` starts a new OR branch. `-e` with `-t` continues the current pipeline.
 
 ### Searching Binary Files
 
-gogrep automatically detects binary files (by checking for NUL bytes in the first 8 KB). Binary files with matches print a summary instead of the matched content:
+agrep automatically detects binary files (by checking for NUL bytes in the first 8 KB). Binary files with matches print a summary instead of the matched content:
 
 ```sh
-gogrep -r "magic" ./data/
+agrep -r "magic" ./data/
 # Binary file ./data/archive.bin matches
 ```
 
 ## Agent options
 
-Designed for AI agents using gogrep as a sensing API (see agent-mode.md):
+Designed for AI agents using agrep as a sensing API (see agent-mode.md):
 
 | Flag | Description |
 |---|---|
@@ -310,7 +310,7 @@ JSON output (`--json`) always includes real line numbers, plus `"span"`
 
 Example agent workflow over a book corpus:
 
-    gogrep --outline --top 10 -r 'backoff' ./books_text/     # who covers it
-    gogrep --sections -rn --max-tokens 2000 'backoff' ./books_text/Manning/
-    gogrep --batch probes.txt --json -r ./books_text/        # expanded concept
-    gogrep --get-region 'books_text/Manning/x.md@3120-3245'  # verify a citation
+    agrep --outline --top 10 -r 'backoff' ./books_text/     # who covers it
+    agrep --sections -rn --max-tokens 2000 'backoff' ./books_text/Manning/
+    agrep --batch probes.txt --json -r ./books_text/        # expanded concept
+    agrep --get-region 'books_text/Manning/x.md@3120-3245'  # verify a citation

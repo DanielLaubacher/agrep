@@ -29,17 +29,17 @@ Consequences, stated as rules:
 ## Architecture
 
 ```
-gogrep (client, unchanged CLI)
+agrep (client, unchanged CLI)
    │  1. send search path + query plan to the well-known socket
-   │     ($XDG_RUNTIME_DIR/gogrep/daemon.sock, 50ms budget)
+   │     ($XDG_RUNTIME_DIR/agrep/daemon.sock, 50ms budget)
    │  2. daemon longest-prefix-matches the path against its root table
    │  3. on any error/timeout/absence/uncovered path → cold scan,
    │     identical output
    ▼
-gogrep serve  (ONE daemon per user — watchman model — hosting many roots)
+agrep serve  (ONE daemon per user — watchman model — hosting many roots)
    ├── root table: path → independent index unit
    │     each root has its own:
-   │       • trigram segments ($XDG_CACHE_HOME/gogrep/<root-id>/)
+   │       • trigram segments ($XDG_CACHE_HOME/agrep/<root-id>/)
    │       • token vocabulary (word → file/line counts; suggest + IDF)
    │       • inotify subtree + journal + monotonic corpus version
    │       • idle timer (cold roots drop mmaps/watches, keep registration)
@@ -50,7 +50,7 @@ gogrep serve  (ONE daemon per user — watchman model — hosting many roots)
   well-known socket — no per-root discovery or startup. Roots share the
   process but no state: independent segments, versions, watches, and
   failure modes (one root's inotify overflow or rebuild never affects
-  another). Registration via `gogrep index ROOT`; optional opt-in lazy
+  another). Registration via `agrep index ROOT`; optional opt-in lazy
   adoption indexes a new root in the background after its first (cold)
   search. In phase D this also yields a single MCP endpoint spanning
   every corpus.
@@ -73,7 +73,7 @@ gogrep serve  (ONE daemon per user — watchman model — hosting many roots)
   Concurrent agents across repos hold one cursor/session per root and
   cannot interfere with each other; concurrent readers of the same root
   get lock-free immutable epoch snapshots.
-- **Same binary, separate identity**: `gogrep serve` keeps distribution
+- **Same binary, separate identity**: `agrep serve` keeps distribution
   simple; the daemon code must add no dependencies or init cost to the
   scanner path (the /etc/services lesson).
 - **Nothing is written inside the corpus** — index and sockets live in
@@ -141,7 +141,7 @@ overridable at registration):
   Overflow or budget pressure degrades the root to `sweep`, never to
   staleness.
 - **`frozen`**: declared-static corpora (e.g. the books mirror) skip
-  both; the index is trusted until `gogrep index --refresh`. Explicit at
+  both; the index is trusted until `agrep index --refresh`. Explicit at
   registration and surfaced in `stat` output — staleness as a visible
   choice, never a surprise.
 
@@ -154,7 +154,7 @@ response, so agents hold them for free.
 
 A consequence worth stating: **Phase A plus the sweep policy is a
 complete, correct, daemonless product** (`--use-index` per invocation,
-manual `gogrep index` runs, no watchers anywhere). The daemon adds
+manual `agrep index` runs, no watchers anywhere). The daemon adds
 cross-query sweep caching, sessions, the vocabulary service, the watch
 upgrade, and MCP — value, not correctness.
 
@@ -181,9 +181,9 @@ already does this work) and the daemon stays engine-agnostic.
 In `cli.Run`, before walking: if every search root falls under a live
 registered daemon and a plan exists → fetch candidates, feed them to the
 existing scheduler as the file channel (walker bypassed), verify as
-always. Any failure → seamless cold scan. `GOGREP_NO_DAEMON=1` opts out;
+always. Any failure → seamless cold scan. `AGREP_NO_DAEMON=1` opts out;
 `--daemon-status` reports what was used (agents can log it). The agent
-runs *the same commands* either way — starting `gogrep serve ~/books-text`
+runs *the same commands* either way — starting `agrep serve ~/books-text`
 once is the only new action, and `--suggest`/`--changed-since`/sessions
 simply light up when the daemon is present.
 
@@ -219,7 +219,7 @@ file. Differential tests: indexed vs cold byte-equal on repo + corpus
 (literal, regex, multi-`-e`); property tests for candidates ⊇ matches,
 sweep add/modify/delete, digest reuse, parent-adopts-child.
 
-**B — Daemon + transparency.** `gogrep serve`, socket + registry,
+**B — Daemon + transparency.** `agrep serve`, socket + registry,
 auto-handoff with fallback, inotify journal, staleness contract,
 idle-exit (`--idle-exit 2h` default). Differential tests re-run against
 a live daemon under concurrent file mutation.

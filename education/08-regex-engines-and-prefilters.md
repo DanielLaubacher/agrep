@@ -1,6 +1,6 @@
 # Regex Engines, Literal Prefilters, and the 16x Gap
 
-Why does ripgrep search regex patterns 13-16x faster than gogrep on the same hardware? The answer is not a single optimization but an entire architectural layer: **literal prefiltering**. This document explains how regex engines work at the automaton level, what literal prefiltering is, how ripgrep's Rust `regex` crate implements it (including the Teddy SIMD algorithm), why Go's `regexp` package cannot match it, and what options exist for closing the gap in a pure-Go codebase.
+Why does ripgrep search regex patterns 13-16x faster than agrep on the same hardware? The answer is not a single optimization but an entire architectural layer: **literal prefiltering**. This document explains how regex engines work at the automaton level, what literal prefiltering is, how ripgrep's Rust `regex` crate implements it (including the Teddy SIMD algorithm), why Go's `regexp` package cannot match it, and what options exist for closing the gap in a pure-Go codebase.
 
 ---
 
@@ -15,7 +15,7 @@ Why does ripgrep search regex patterns 13-16x faster than gogrep on the same har
 7. [Teddy: SIMD Multi-Pattern Prefiltering](#7-teddy-simd-multi-pattern-prefiltering)
 8. [memchr: Single and Multi-Byte SIMD Search](#8-memchr-single-and-multi-byte-simd-search)
 9. [Why the Gap Depends on the Pattern](#9-why-the-gap-depends-on-the-pattern)
-10. [gogrep's Existing Literal Optimization](#10-gogreps-existing-literal-optimization)
+10. [agrep's Existing Literal Optimization](#10-agreps-existing-literal-optimization)
 11. [Approaches to Closing the Gap](#11-approaches-to-closing-the-gap)
 12. [Regex Prefiltering: A Worked Example](#12-regex-prefiltering-a-worked-example)
 13. [The DFA Advantage Beyond Prefilters](#13-the-dfa-advantage-beyond-prefilters)
@@ -27,33 +27,33 @@ Why does ripgrep search regex patterns 13-16x faster than gogrep on the same har
 
 ## 1. The Benchmark That Reveals the Gap
 
-The following benchmarks compare gogrep and ripgrep on `/usr/include` (62,419 files) across different pattern types. The results were collected with `hyperfine --warmup 3 --runs 10` on an Intel Xeon E-2176M (12 threads):
+The following benchmarks compare agrep and ripgrep on `/usr/include` (62,419 files) across different pattern types. The results were collected with `hyperfine --warmup 3 --runs 10` on an Intel Xeon E-2176M (12 threads):
 
-| Scenario | gogrep | rg | Ratio |
+| Scenario | agrep | rg | Ratio |
 |---|---|---|---|
-| Fixed string `"define"`, `-l` | 164ms | 198ms | **gogrep 1.21x faster** |
-| Fixed string `"define"`, `-i -l` | 173ms | 235ms | **gogrep 1.36x faster** |
-| Fixed string `"define"`, `-c` | 227ms | 260ms | **gogrep 1.14x faster** |
-| Multi-pattern (`-e` x3), `-l` | 215ms | 229ms | **gogrep 1.06x faster** |
+| Fixed string `"define"`, `-l` | 164ms | 198ms | **agrep 1.21x faster** |
+| Fixed string `"define"`, `-i -l` | 173ms | 235ms | **agrep 1.36x faster** |
+| Fixed string `"define"`, `-c` | 227ms | 260ms | **agrep 1.14x faster** |
+| Multi-pattern (`-e` x3), `-l` | 215ms | 229ms | **agrep 1.06x faster** |
 | Fixed string, full output | 357ms | 271ms | rg 1.32x faster |
 | Fixed string, `-n` output | 422ms | 295ms | rg 1.43x faster |
 | No match, `-l` | 162ms | 140ms | rg 1.16x faster |
 | Regex `"err(or\|no\|code)"`, `-l` | 2,628ms | 164ms | **rg 16x faster** |
 | Regex `"[0-9][a-z][0-9][a-z]"`, `-l` | 2,982ms | 186ms | **rg 16x faster** |
 | Regex `"[aeiou]{2}[^aeiou]{2}[aeiou]"`, `-l` | 433ms | 219ms | rg 2.0x faster |
-| Regex `"^.{10,50}$"`, `-l` | 167ms | 250ms | **gogrep 1.5x faster** |
+| Regex `"^.{10,50}$"`, `-l` | 167ms | 250ms | **agrep 1.5x faster** |
 
 Three distinct performance regimes emerge:
 
-1. **Fixed strings**: gogrep wins by 1.06x-1.36x. Both tools use SIMD-accelerated literal search, but gogrep's raw `getdents64` walker and Linux-specific I/O path give it an edge.
+1. **Fixed strings**: agrep wins by 1.06x-1.36x. Both tools use SIMD-accelerated literal search, but agrep's raw `getdents64` walker and Linux-specific I/O path give it an edge.
 
 2. **Output-heavy workloads**: rg wins by 1.3x-1.4x. Rust's stdio machinery is faster for high-volume line output.
 
 3. **Regex patterns**: rg wins by 2x-16x. This is the gap this article explains.
 
-The most striking result is the last row: `^.{10,50}$` is a regex where **gogrep is 1.5x faster**. This pattern matches almost every line in every file (most lines are between 10-50 characters), so both engines must process every byte through the regex automaton. There is no shortcut. In this I/O-saturated regime, gogrep's faster file walker dominates.
+The most striking result is the last row: `^.{10,50}$` is a regex where **agrep is 1.5x faster**. This pattern matches almost every line in every file (most lines are between 10-50 characters), so both engines must process every byte through the regex automaton. There is no shortcut. In this I/O-saturated regime, agrep's faster file walker dominates.
 
-The contrast with `[0-9][a-z][0-9][a-z]` (16x slower) is the key insight: that pattern has sparse matches across 62K files, and rg can skip most of the input using a prefilter. gogrep cannot -- it feeds every byte through Go's NFA.
+The contrast with `[0-9][a-z][0-9][a-z]` (16x slower) is the key insight: that pattern has sparse matches across 62K files, and rg can skip most of the input using a prefilter. agrep cannot -- it feeds every byte through Go's NFA.
 
 ---
 
@@ -296,7 +296,7 @@ Once literals are extracted, the engine chooses a prefilter strategy based on wh
 
 If the pattern has a literal prefix of 2+ bytes (like `err` from `err(or|no|code)`), the engine uses **memmem** (SIMD-accelerated substring search).
 
-This is conceptually identical to what gogrep's `BoyerMooreMatcher` does with `bytes.Index` -- scan the input at 10+ GB/s, only engaging the automaton at candidate positions.
+This is conceptually identical to what agrep's `BoyerMooreMatcher` does with `bytes.Index` -- scan the input at 10+ GB/s, only engaging the automaton at candidate positions.
 
 Throughput: 10-30 GB/s depending on pattern length and input data.
 
@@ -444,7 +444,7 @@ Searches for one byte in a buffer. The AVX2 implementation:
    d. If bitmask is non-zero, compute position from trailing zeros.
 ```
 
-This is essentially the same algorithm gogrep uses in `internal/simd/simd.go` for `IndexByte`. Both gogrep and ripgrep achieve similar throughput here because Go's standard library `bytes.IndexByte` already uses AVX2 assembly.
+This is essentially the same algorithm agrep uses in `internal/simd/simd.go` for `IndexByte`. Both agrep and ripgrep achieve similar throughput here because Go's standard library `bytes.IndexByte` already uses AVX2 assembly.
 
 ### memchr2 and memchr3 (2-3 bytes)
 
@@ -464,9 +464,9 @@ The key insight: ORing the comparison results is a single instruction. Searching
 
 This is important for regex prefiltering because character classes like `[aeiou]` can be decomposed: if the class has 2-3 high-frequency representatives, `memchr2`/`memchr3` can quickly find candidate positions.
 
-### Comparison with gogrep
+### Comparison with agrep
 
-gogrep's SIMD layer (`internal/simd/`) implements the same `IndexByte` and `Count` algorithms using Go 1.26's `simd/archsimd` package:
+agrep's SIMD layer (`internal/simd/`) implements the same `IndexByte` and `Count` algorithms using Go 1.26's `simd/archsimd` package:
 
 ```go
 // internal/simd/simd.go
@@ -490,7 +490,7 @@ This achieves the same performance as Rust's `memchr` for single-byte search. Th
 
 ## 9. Why the Gap Depends on the Pattern
 
-The benchmark results reveal a clear pattern: the rg/gogrep performance ratio depends almost entirely on how much work the prefilter can skip.
+The benchmark results reveal a clear pattern: the rg/agrep performance ratio depends almost entirely on how much work the prefilter can skip.
 
 ### Quantifying Prefilter Effectiveness
 
@@ -502,7 +502,7 @@ Define the **prefilter skip ratio** as the fraction of input bytes that the pref
 | `err(or\|no\|code)` | memmem on `"err"` | >99% | 16x |
 | `[0-9][a-z][0-9][a-z]` | memchr on `[0-9]` | ~95% | 16x |
 | `[aeiou]{2}[^aeiou]{2}[aeiou]` | memchr on `[aeiou]` | ~60% | 2x |
-| `^.{10,50}$` | none | 0% | 0.67x (gogrep faster) |
+| `^.{10,50}$` | none | 0% | 0.67x (agrep faster) |
 
 The relationship is approximately:
 
@@ -510,11 +510,11 @@ The relationship is approximately:
 rg speedup ≈ 1 / (1 - skip_ratio + skip_ratio / SIMD_throughput_ratio)
 ```
 
-When the skip ratio is high (>99%), rg approaches its SIMD scan speed (~10 GB/s) while gogrep is stuck at NFA speed (~0.5 GB/s). The ratio is 10/0.5 = 20x, close to the observed 16x.
+When the skip ratio is high (>99%), rg approaches its SIMD scan speed (~10 GB/s) while agrep is stuck at NFA speed (~0.5 GB/s). The ratio is 10/0.5 = 20x, close to the observed 16x.
 
 When the skip ratio is moderate (~60%, as with `[aeiou]` which appears in ~40% of ASCII bytes), the speedup drops to ~2x because rg must still run the automaton on nearly half the bytes.
 
-When the skip ratio is 0%, both tools run their automaton on every byte. The automaton speed difference (lazy DFA vs Thompson NFA) is modest (~1.5-2x), and gogrep's faster I/O can overcome it.
+When the skip ratio is 0%, both tools run their automaton on every byte. The automaton speed difference (lazy DFA vs Thompson NFA) is modest (~1.5-2x), and agrep's faster I/O can overcome it.
 
 ### The Sparse Match Effect
 
@@ -528,9 +528,9 @@ This is why the `[aeiou]` benchmark shows only a 2x gap: vowels are common in En
 
 ---
 
-## 10. gogrep's Existing Literal Optimization
+## 10. agrep's Existing Literal Optimization
 
-gogrep already handles the most important case: when the user's pattern is a literal string (no regex metacharacters), the factory routes it to `BoyerMooreMatcher`, which uses SIMD-accelerated search.
+agrep already handles the most important case: when the user's pattern is a literal string (no regex metacharacters), the factory routes it to `BoyerMooreMatcher`, which uses SIMD-accelerated search.
 
 **File:** `internal/matcher/factory.go`
 
@@ -567,7 +567,7 @@ func isLiteral(pattern string) bool {
 }
 ```
 
-This means `gogrep "define"` automatically uses `BoyerMooreMatcher` (SIMD) instead of `RegexMatcher` (NFA), giving the same performance as if the user had passed `-F`. This is why gogrep beats rg on fixed-string benchmarks -- both tools use SIMD search, but gogrep's walker is faster.
+This means `agrep "define"` automatically uses `BoyerMooreMatcher` (SIMD) instead of `RegexMatcher` (NFA), giving the same performance as if the user had passed `-F`. This is why agrep beats rg on fixed-string benchmarks -- both tools use SIMD search, but agrep's walker is faster.
 
 The gap only appears when the pattern contains metacharacters, forcing the `RegexMatcher` path.
 
@@ -704,7 +704,7 @@ type PrefilterRegexMatcher struct {
 
 ### Step 3: MatchExists (files-only mode)
 
-For `gogrep -l "err(or|no|code)"`, we need to know if any match exists in the file:
+For `agrep -l "err(or|no|code)"`, we need to know if any match exists in the file:
 
 ```go
 func (m *PrefilterRegexMatcher) MatchExists(data []byte) bool {
@@ -783,7 +783,7 @@ Go's Thompson NFA, by contrast, recomputes the state set at every byte. For 6 NF
 
 From the benchmarks, on the `[aeiou]{2}[^aeiou]{2}[aeiou]` pattern (where rg can't prefilter much because vowels are common):
 
-- gogrep: 433ms (NFA on every byte)
+- agrep: 433ms (NFA on every byte)
 - rg: 219ms (lazy DFA, transitions cached after first few lines)
 - Ratio: **2.0x**
 
@@ -797,19 +797,19 @@ This 2x factor is the raw DFA-vs-NFA advantage, separate from any prefilter bene
 
 Test corpus: `/usr/include`, 62,419 files, Intel Xeon E-2176M @ 2.70GHz, 12 threads.
 
-| # | Scenario | Pattern | gogrep | rg | Ratio | Primary Factor |
+| # | Scenario | Pattern | agrep | rg | Ratio | Primary Factor |
 |---|---|---|---|---|---|---|
-| 1 | Fixed, `-l` | `"define"` | 164ms | 198ms | 1.21x gogrep | Walker speed |
-| 2 | Fixed, `-i -l` | `"define"` | 173ms | 235ms | 1.36x gogrep | SIMD case folding |
-| 3 | Fixed, `-c` | `"define"` | 227ms | 260ms | 1.14x gogrep | Walker speed |
-| 4 | Multi, `-l` | 3 patterns | 215ms | 229ms | 1.06x gogrep | Walker speed |
+| 1 | Fixed, `-l` | `"define"` | 164ms | 198ms | 1.21x agrep | Walker speed |
+| 2 | Fixed, `-i -l` | `"define"` | 173ms | 235ms | 1.36x agrep | SIMD case folding |
+| 3 | Fixed, `-c` | `"define"` | 227ms | 260ms | 1.14x agrep | Walker speed |
+| 4 | Multi, `-l` | 3 patterns | 215ms | 229ms | 1.06x agrep | Walker speed |
 | 5 | Fixed, output | `"define"` | 357ms | 271ms | 1.32x rg | Rust stdio |
 | 6 | Fixed, `-n` | `"define"` | 422ms | 295ms | 1.43x rg | Rust stdio + linenum |
 | 7 | No match, `-l` | impossible | 162ms | 140ms | 1.16x rg | DFA skip |
 | 8 | Regex, `-l` | `err(or\|no\|code)` | 2,628ms | 164ms | 16x rg | Prefilter on `"err"` |
 | 9 | Regex, `-l` | `[0-9][a-z][0-9][a-z]` | 2,982ms | 186ms | 16x rg | memchr `[0-9]` |
 | 10 | Regex, `-l` | `[aeiou]{2}[^aeiou]{2}[aeiou]` | 433ms | 219ms | 2.0x rg | Lazy DFA (prefilter weak) |
-| 11 | Regex, `-l` | `^.{10,50}$` | 167ms | 250ms | 1.5x gogrep | No prefilter, I/O bound |
+| 11 | Regex, `-l` | `^.{10,50}$` | 167ms | 250ms | 1.5x agrep | No prefilter, I/O bound |
 
 ### Performance Regime Map
 
@@ -817,27 +817,27 @@ Test corpus: `/usr/include`, 62,419 files, Intel Xeon E-2176M @ 2.70GHz, 12 thre
                     Prefilter skip ratio
                     0%            50%            99%+
                     |              |              |
-gogrep faster  <----+--------------+--------------+----> rg faster
+agrep faster  <----+--------------+--------------+----> rg faster
                     |              |              |
                 ^.{10,50}$    [aeiou]{2}..   err(or|no|code)
-                (1.5x gogrep)  (2x rg)      (16x rg)
+                (1.5x agrep)  (2x rg)      (16x rg)
 ```
 
-The crossover point -- where gogrep and rg are approximately equal -- occurs around a skip ratio of ~30-40%. Below this, gogrep's I/O advantage dominates. Above this, rg's prefilter advantage dominates.
+The crossover point -- where agrep and rg are approximately equal -- occurs around a skip ratio of ~30-40%. Below this, agrep's I/O advantage dominates. Above this, rg's prefilter advantage dominates.
 
-### Where gogrep Wins
+### Where agrep Wins
 
-1. **Files-only mode (`-l`)**: gogrep's raw `getdents64` + `O_NOATIME` walker traverses the filesystem faster than rg's `walkdir` (Rust's cross-platform directory walker). This is a ~10-20% advantage.
+1. **Files-only mode (`-l`)**: agrep's raw `getdents64` + `O_NOATIME` walker traverses the filesystem faster than rg's `walkdir` (Rust's cross-platform directory walker). This is a ~10-20% advantage.
 
-2. **Case-insensitive search (`-i`)**: gogrep's `IndexCaseInsensitive` uses a custom AVX2 Horspool with SIMD case folding, while rg falls back to a more general approach. This gives gogrep a ~36% advantage.
+2. **Case-insensitive search (`-i`)**: agrep's `IndexCaseInsensitive` uses a custom AVX2 Horspool with SIMD case folding, while rg falls back to a more general approach. This gives agrep a ~36% advantage.
 
-3. **Patterns that match almost everything**: When the regex matches nearly every line (like `^.{10,50}$`), no prefilter can help, and the I/O-bound nature of the workload means gogrep's faster walker wins.
+3. **Patterns that match almost everything**: When the regex matches nearly every line (like `^.{10,50}$`), no prefilter can help, and the I/O-bound nature of the workload means agrep's faster walker wins.
 
 ### Where rg Wins
 
 1. **Any regex pattern with extractable literals**: The prefilter+lazy DFA combination gives rg a 10-16x advantage. This is the dominant case for real-world regex grep usage.
 
-2. **Output formatting**: rg's Rust-native buffered writer is ~1.3-1.4x faster than gogrep's Go output path for high-volume line output.
+2. **Output formatting**: rg's Rust-native buffered writer is ~1.3-1.4x faster than agrep's Go output path for high-volume line output.
 
 3. **No-match full scan**: rg is ~16% faster even when scanning all files with no matches. This reflects the lazy DFA's lower per-byte cost compared to Go's NFA (even with the NFA processing zero matches, it has higher overhead per file).
 
@@ -851,17 +851,17 @@ The crossover point -- where gogrep and rg are approximately equal -- occurs aro
 
 3. **The lazy DFA provides a secondary 2x advantage.** Even when no prefilter is possible, a cached DFA lookup is roughly twice as fast as a Thompson NFA simulation per byte. This is significant but smaller than the prefilter effect.
 
-4. **Fixed-string search is already at parity.** Both gogrep and rg use SIMD-accelerated literal search for fixed strings. gogrep's advantage in this regime comes from I/O, not from the search algorithm.
+4. **Fixed-string search is already at parity.** Both agrep and rg use SIMD-accelerated literal search for fixed strings. agrep's advantage in this regime comes from I/O, not from the search algorithm.
 
-5. **The gap is pattern-dependent, not fundamental.** gogrep beats rg on several workloads (fixed strings, case-insensitive, near-universal match patterns). The 16x gap is specific to regex patterns with extractable literals -- exactly the case where a prefilter could help but doesn't exist in gogrep's code path.
+5. **The gap is pattern-dependent, not fundamental.** agrep beats rg on several workloads (fixed strings, case-insensitive, near-universal match patterns). The 16x gap is specific to regex patterns with extractable literals -- exactly the case where a prefilter could help but doesn't exist in agrep's code path.
 
-6. **Pragmatic prefiltering closes most of the gap.** Extracting the longest required literal substring from a regex and using it as a SIMD prefilter would eliminate the 16x gap for the majority of real-world patterns, without the complexity of implementing a lazy DFA. This is the highest-leverage optimization available for gogrep's regex path.
+6. **Pragmatic prefiltering closes most of the gap.** Extracting the longest required literal substring from a regex and using it as a SIMD prefilter would eliminate the 16x gap for the majority of real-world patterns, without the complexity of implementing a lazy DFA. This is the highest-leverage optimization available for agrep's regex path.
 
 ---
 
 ## 16. Cross-References
 
-- [01: SIMD and AVX2](01-simd-and-avx2.md) -- The SIMD primitives (`IndexByte`, `Index`, Horspool) that would power a regex prefilter, plus the `archsimd` API used throughout gogrep.
+- [01: SIMD and AVX2](01-simd-and-avx2.md) -- The SIMD primitives (`IndexByte`, `Index`, Horspool) that would power a regex prefilter, plus the `archsimd` API used throughout agrep.
 - [04: String Search Algorithms](04-string-search-algorithms.md) -- The Matcher interface, search-then-split architecture, and BoyerMooreMatcher that already provides SIMD-accelerated literal search. A regex prefilter would compose with this infrastructure.
 - [06: GC and Allocation Optimization](06-gc-and-allocation-optimization.md) -- The `[][2]int` vs `[][]int` optimization that reduced AhoCorasick allocations by 99.9%.
 - [07: Benchmarking and Profiling](07-benchmarking-and-profiling.md) -- How to run the benchmarks, use `hyperfine` for end-to-end comparison, and interpret throughput numbers.

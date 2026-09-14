@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod init:*)",
+      "Bash(go get:*)",
+      "Bash(printf:*)",
+      "Bash(go build:*)",
+      "Bash(./bin/agrep:*)",
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:man7.org)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(make build:*)",
+      "Bash(bin/agrep:*)",
+      "Bash(bash /home/dl/dev/agrep/scripts/benchmark.sh)",
+      "Bash(/tmp/agrep:*)",
+      "Bash(echo:*)",
+      "Bash(grep:*)",
+      "Bash(go version:*)",
+      "Bash(find:*)",
+      "Bash(GOEXPERIMENT=simd go fix ./...)",
+      "Bash(GOEXPERIMENT=simd go fix -help)",
+      "Bash(GOEXPERIMENT=simd go tool vet help)",
+      "Bash(GOEXPERIMENT=simd go tool fix help)",
+      "Bash(GOEXPERIMENT=simd go tool fix -fix -diff ./...)",
+      "Bash(GOEXPERIMENT=simd go tool vet -fix -diff ./...)",
+      "Bash(GOEXPERIMENT=simd go fix -diff ./...)",
+      "Bash(for analyzer in any buildtag fmtappendf forvar hostport inline mapsloop minmax newexpr omitzero plusbuild rangeint reflecttypefor slicescontains slicessort stditerators stringsbuilder stringscut stringscutprefix stringsseq testingcontext waitgroup)",
+      "Bash(do)",
+      "Bash(GOEXPERIMENT=simd go fix -$analyzer -diff ./...)",
+      "Bash(done)",
+      "Bash(for analyzer in appends asmdecl assign atomic bools buildtag cgocall composites copylocks defers directive errorsas framepointer hostport httpresponse ifaceassert loopclosure lostcancel nilfunc printf shift sigchanyzer slog stdmethods stdversion stringintconv structtag testinggoroutine tests timeformat unmarshal unreachable unsafeptr unusedresult waitgroup)",
+      "Bash(gopls version)",
+      "Bash(gopls help mcp)",
+      "Bash(gopls mcp -instructions)",
+      "Bash(GOEXPERIMENT=simd gopls stats)",
+      "Bash(GOEXPERIMENT=simd gopls check ./...)",
+      "Bash(GOEXPERIMENT=simd gopls vulncheck ./...)"
+    ]
+  }
+}

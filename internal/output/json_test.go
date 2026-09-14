@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dl/gogrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
 )
 
 func TestJSONFormatter_BasicMatch(t *testing.T) {

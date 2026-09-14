@@ -1,6 +1,6 @@
 package output
 
-import "github.com/dl/gogrep/internal/matcher"
+import "github.com/DanielLaubacher/agrep/internal/matcher"
 
 // Result aggregates the matches found in a single file.
 type Result struct {

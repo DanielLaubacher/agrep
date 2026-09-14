@@ -8,7 +8,7 @@ import "fmt"
 //
 // The real PCRE backend (go.elara.ws/pcre) transitively links
 // modernc.org/libc, whose netdb package init parses /etc/services
-// (~300KB) at every process start — a ~5ms tax on every gogrep
+// (~300KB) at every process start — a ~5ms tax on every agrep
 // invocation, even ones that never use -P. The default build therefore
 // excludes it; `make build-pcre` produces a binary with full -P support.
 type PCREMatcher struct {

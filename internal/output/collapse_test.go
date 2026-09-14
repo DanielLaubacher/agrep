@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dl/gogrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
 )
 
 func repeatResult(path string, n int) Result {

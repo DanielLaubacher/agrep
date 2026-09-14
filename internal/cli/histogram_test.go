@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dl/gogrep/internal/matcher"
-	"github.com/dl/gogrep/internal/output"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/output"
 )
 
 func histResult(path, data string, matches []matcher.Match, positions [][2]int) output.Result {

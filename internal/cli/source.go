@@ -3,7 +3,7 @@ package cli
 // fileSource centralizes where searched files come from: an explicit
 // list (--files-from, '-' = stdin), the recursive walk, or literal
 // paths. Every aggregation and search mode draws from this one place,
-// so list-driven composition (`gogrep -l ... | gogrep --files-from -`)
+// so list-driven composition (`agrep -l ... | agrep --files-from -`)
 // works everywhere.
 
 import (
@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/dl/gogrep/internal/walker"
+	"github.com/DanielLaubacher/agrep/internal/walker"
 )
 
 // fileSource returns the channel of files to search. Walk errors are
@@ -96,7 +96,7 @@ func loadFileList(from string) ([]string, error) {
 // changedFiles resolves --changed-since REF: files changed between REF
 // and the worktree plus untracked (not ignored) files, restricted to
 // the search paths and include/exclude globs. Requires the git binary;
-// this is the one stateless place gogrep shells out. Deleted files are
+// this is the one stateless place agrep shells out. Deleted files are
 // dropped; tracked files bypass ignore rules deliberately (a tracked
 // file is searchable even when a .gitignore would hide it from walks).
 func changedFiles(ref string, paths []string, globs []string) ([]string, error) {

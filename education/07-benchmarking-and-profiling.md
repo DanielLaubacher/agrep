@@ -1,6 +1,6 @@
 # Benchmarking and Profiling
 
-Performance measurement methodology for systems-level Go programs, with concrete examples drawn entirely from the gogrep codebase.
+Performance measurement methodology for systems-level Go programs, with concrete examples drawn entirely from the agrep codebase.
 
 This document covers the full spectrum of performance tooling: micro-benchmarks with Go's `testing.B` framework, statistical comparison with `benchstat`, escape analysis for heap allocation tracking, CPU and memory profiling with `pprof`, syscall tracing with `strace`, and end-to-end benchmarking with `hyperfine`. Each section builds on the previous one, moving from the smallest unit of measurement (a single function) to the largest (a full application compared against competitors).
 
@@ -9,7 +9,7 @@ This document covers the full spectrum of performance tooling: micro-benchmarks 
 ## Table of Contents
 
 1. [Go Benchmark Framework](#go-benchmark-framework)
-2. [Catalog of gogrep Benchmarks](#catalog-of-gogrep-benchmarks)
+2. [Catalog of agrep Benchmarks](#catalog-of-agrep-benchmarks)
 3. [benchstat -- Statistical Comparison](#benchstat--statistical-comparison)
 4. [Escape Analysis](#escape-analysis)
 5. [CPU Profiling with pprof](#cpu-profiling-with-pprof)
@@ -38,7 +38,7 @@ The framework determines how many iterations to run by measuring wall-clock time
 
 ### Go 1.24+ b.Loop() Style
 
-gogrep uses the modern `b.Loop()` style introduced in Go 1.24, as seen throughout the benchmark files. Here is the canonical example from `internal/matcher/boyermoore_test.go`:
+agrep uses the modern `b.Loop()` style introduced in Go 1.24, as seen throughout the benchmark files. Here is the canonical example from `internal/matcher/boyermoore_test.go`:
 
 ```go
 func BenchmarkBoyerMoore_ShortPattern(b *testing.B) {
@@ -68,9 +68,9 @@ for i := 0; i < b.N; i++ {
 
 ### Key testing.B Methods
 
-**`b.ResetTimer()`** -- Resets both the wall-clock timer and allocation counters. Place this call after any setup work (creating test data, initializing matchers, compiling regexes) so that setup cost does not contaminate the measurement. Every benchmark in gogrep calls `b.ResetTimer()` after constructing the matcher and test data.
+**`b.ResetTimer()`** -- Resets both the wall-clock timer and allocation counters. Place this call after any setup work (creating test data, initializing matchers, compiling regexes) so that setup cost does not contaminate the measurement. Every benchmark in agrep calls `b.ResetTimer()` after constructing the matcher and test data.
 
-**`b.SetBytes(n int64)`** -- Tells the framework how many bytes each iteration processes. This enables throughput reporting in the output (e.g., `9718.75 MB/s`). For gogrep's matcher benchmarks, this is always the length of the input data buffer:
+**`b.SetBytes(n int64)`** -- Tells the framework how many bytes each iteration processes. This enables throughput reporting in the output (e.g., `9718.75 MB/s`). For agrep's matcher benchmarks, this is always the length of the input data buffer:
 
 ```go
 b.SetBytes(int64(len(data)))
@@ -78,7 +78,7 @@ b.SetBytes(int64(len(data)))
 
 Without `b.SetBytes`, the output only shows `ns/op`. With it, you also get `MB/s`, which is critical for evaluating grep performance because the fundamental question is "how fast can this matcher scan data?"
 
-**`b.ReportAllocs()`** -- Explicitly enables per-operation allocation reporting within the benchmark function. This is an alternative to the `-benchmem` command-line flag. If you want allocation tracking to always appear for a specific benchmark regardless of command-line flags, call this in the benchmark body. In gogrep's codebase, `-benchmem` is used at the command line instead (via the Makefile), so `b.ReportAllocs()` is not called explicitly.
+**`b.ReportAllocs()`** -- Explicitly enables per-operation allocation reporting within the benchmark function. This is an alternative to the `-benchmem` command-line flag. If you want allocation tracking to always appear for a specific benchmark regardless of command-line flags, call this in the benchmark body. In agrep's codebase, `-benchmem` is used at the command line instead (via the Makefile), so `b.ReportAllocs()` is not called explicitly.
 
 **`b.TempDir()`** -- Creates a temporary directory that is automatically cleaned up when the benchmark finishes. The input benchmarks in `internal/input/input_test.go` use this to create temporary files for I/O benchmarks:
 
@@ -120,7 +120,7 @@ func BenchmarkPCRE_Simple(b *testing.B) {
 
 ### Running Benchmarks
 
-All gogrep commands require `GOEXPERIMENT=simd` because the codebase uses `simd/archsimd` for AVX2 vector types. The Makefile sets this automatically.
+All agrep commands require `GOEXPERIMENT=simd` because the codebase uses `simd/archsimd` for AVX2 vector types. The Makefile sets this automatically.
 
 ```bash
 # Run all benchmarks in the matcher package
@@ -144,11 +144,11 @@ bench:
         ./internal/matcher/ ./internal/input/ ./internal/simd/
 ```
 
-Three packages have benchmarks: `matcher`, `input`, and `simd`. PCRE benchmarks exist in `pcre_test.go` but are deliberately excluded from `make bench` because `go.elara.ws/pcre` uses `modernc.org/libc` internally, which crashes with a GC finalizer SIGSEGV during benchmark teardown. The `make test` target handles PCRE differently: it runs race-detector tests first with `GOGREP_SKIP_PCRE=1`, then runs PCRE tests separately without the race detector:
+Three packages have benchmarks: `matcher`, `input`, and `simd`. PCRE benchmarks exist in `pcre_test.go` but are deliberately excluded from `make bench` because `go.elara.ws/pcre` uses `modernc.org/libc` internally, which crashes with a GC finalizer SIGSEGV during benchmark teardown. The `make test` target handles PCRE differently: it runs race-detector tests first with `AGREP_SKIP_PCRE=1`, then runs PCRE tests separately without the race detector:
 
 ```makefile
 test:
-    GOEXPERIMENT=$(GOEXPERIMENT) GOGREP_SKIP_PCRE=1 go test -race ./...
+    GOEXPERIMENT=$(GOEXPERIMENT) AGREP_SKIP_PCRE=1 go test -race ./...
     GOEXPERIMENT=$(GOEXPERIMENT) go test ./internal/matcher/ -run "PCRE"
 ```
 
@@ -195,7 +195,7 @@ This 9.7 GB/s throughput is close to memory bandwidth on modern hardware, meanin
 
 ### Benchmark Naming Conventions
 
-gogrep follows a consistent naming pattern for benchmarks:
+agrep follows a consistent naming pattern for benchmarks:
 
 ```
 Benchmark{Algorithm}_{Scenario}
@@ -223,7 +223,7 @@ This convention makes it easy to use `-bench` regex filtering:
 
 ### Test Data Construction Patterns
 
-gogrep benchmarks consistently use 10,000 lines of ~44 bytes each, producing approximately 440KB of test data:
+agrep benchmarks consistently use 10,000 lines of ~44 bytes each, producing approximately 440KB of test data:
 
 ```go
 data := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog\n"), 10000)
@@ -252,7 +252,7 @@ This gives exactly 10 matches in 10,000 lines (1 in 1,000), which is realistic f
 
 ---
 
-## Catalog of gogrep Benchmarks
+## Catalog of agrep Benchmarks
 
 ### internal/matcher/ Benchmarks
 
@@ -266,7 +266,7 @@ Source files: `internal/matcher/boyermoore_test.go`, `internal/matcher/ahocorasi
 | `BoyerMoore_CaseInsensitive` | Case-insensitive "LAZY" against lowercase data | 440KB, 10K lines | Tests SIMD case-folding path (`IndexAllCaseInsensitive`) |
 | `BoyerMoore_SparseMatch` | 1 match per 1000 lines (10 total) | 440KB, 10K lines | Most realistic scenario: fast scan + minimal line extraction |
 | `Regex_SparseMatch` | RE2 regex on same sparse data | 440KB, 10K lines | Direct comparison: how much faster is BoyerMoore vs RE2 on fixed strings? |
-| `BytesIndex_ShortPattern` | Raw `bytes.Index` loop (no line extraction) | 440KB, 10K lines | Baseline: how fast is stdlib pattern search without gogrep overhead? |
+| `BytesIndex_ShortPattern` | Raw `bytes.Index` loop (no line extraction) | 440KB, 10K lines | Baseline: how fast is stdlib pattern search without agrep overhead? |
 | `AhoCorasick_TwoPatterns` | 2 patterns "fox"+"dog", both match every line | 440KB, 10K lines | Multi-pattern via Aho-Corasick automaton |
 | `AhoCorasick_TenPatterns` | 10 patterns, many matches per line | ~700KB, 10K lines | Stress test: Aho-Corasick with large automaton, dense output |
 | `AhoCorasick_NoMatch` | 3 non-matching patterns "zzz"+"yyy"+"xxx" | 440KB, 10K lines | Automaton traversal cost on miss |
@@ -281,7 +281,7 @@ Source files: `internal/simd/simd_test.go`, `internal/simd/index_test.go`
 
 | Benchmark | What It Measures | Notes |
 |---|---|---|
-| `IndexByte_SIMD` | Single-byte search via gogrep's `IndexByte` | Uses `archsimd.LoadUint8x32Slice` + `Equal` + `ToBits` |
+| `IndexByte_SIMD` | Single-byte search via agrep's `IndexByte` | Uses `archsimd.LoadUint8x32Slice` + `Equal` + `ToBits` |
 | `IndexByte_Stdlib` | `bytes.IndexByte` (stdlib) | Already uses SSE2/AVX2 asm internally in Go |
 | `LastIndexByte_SIMD` | Backward single-byte search | Custom SIMD backward scan |
 | `LastIndexByte_Stdlib` | `bytes.LastIndexByte` (stdlib) | Comparison baseline |
@@ -391,7 +391,7 @@ If the p-value is high (e.g., `p=0.312`), benchstat will show `~ (no significant
 
 ## Escape Analysis
 
-Go's compiler decides whether to allocate variables on the stack or the heap. Stack allocation is essentially free (just a pointer adjustment), while heap allocation requires the garbage collector to track and eventually reclaim the memory. In a performance-critical program like gogrep, understanding and controlling escape behavior is essential.
+Go's compiler decides whether to allocate variables on the stack or the heap. Stack allocation is essentially free (just a pointer adjustment), while heap allocation requires the garbage collector to track and eventually reclaim the memory. In a performance-critical program like agrep, understanding and controlling escape behavior is essential.
 
 ### How Escape Analysis Works
 
@@ -451,7 +451,7 @@ func good() []int {
 }
 ```
 
-gogrep uses this pattern in `IndexAll` (`internal/simd/index.go`):
+agrep uses this pattern in `IndexAll` (`internal/simd/index.go`):
 
 ```go
 var stackBuf [16]int  // stays on stack
@@ -480,7 +480,7 @@ var x int = 42
 fmt.Println(x)  // x escapes: fmt.Println takes interface{}, which boxes the int
 ```
 
-The value must be boxed into an interface, which requires a heap allocation. This is why gogrep avoids `fmt.Sprintf` and `fmt.Fprintf` on hot paths -- the output formatter writes `[]byte` directly using `writev`.
+The value must be boxed into an interface, which requires a heap allocation. This is why agrep avoids `fmt.Sprintf` and `fmt.Fprintf` on hot paths -- the output formatter writes `[]byte` directly using `writev`.
 
 **3. Closures capturing mutable variables:**
 
@@ -507,7 +507,7 @@ The scheduler may deliver the value to a goroutine running on a different OS thr
 make([]byte, n)  // escapes if n is not a compile-time constant
 ```
 
-When the compiler cannot prove the size at compile time, it must heap-allocate. gogrep mitigates this with `sync.Pool` for reusable buffers.
+When the compiler cannot prove the size at compile time, it must heap-allocate. agrep mitigates this with `sync.Pool` for reusable buffers.
 
 ### Practical Guidelines
 
@@ -528,9 +528,9 @@ Use `-benchmem` output to measure actual `allocs/op`, which is more actionable t
 
 Go's `runtime/pprof` package samples the program counter of every goroutine at ~100Hz (100 times per second) during a CPU profile. Each sample records the full call stack. After the profile is collected, `go tool pprof` can aggregate these samples to show which functions consumed the most CPU time.
 
-### gogrep's Built-In Profiling Support
+### agrep's Built-In Profiling Support
 
-gogrep has `--cpuprofile` and `--memprofile` flags built into the main binary. From `cmd/gogrep/main.go`:
+agrep has `--cpuprofile` and `--memprofile` flags built into the main binary. From `cmd/agrep/main.go`:
 
 ```go
 // CPU profiling
@@ -568,7 +568,7 @@ The `runtime.GC()` call before `WriteHeapProfile` is important: without it, the 
 
 ### Signal Handling for Profile Safety
 
-If the user presses Ctrl+C during a profiled run, the profile data could be lost (the file would be truncated or empty). gogrep handles this:
+If the user presses Ctrl+C during a profiled run, the profile data could be lost (the file would be truncated or empty). agrep handles this:
 
 ```go
 sigCh := make(chan os.Signal, 1)
@@ -589,10 +589,10 @@ This ensures `StopCPUProfile()` flushes all buffered samples to disk before the 
 
 ```bash
 # CPU profile of a recursive search
-./bin/gogrep --cpuprofile /tmp/cpu.prof --no-ignore --hidden 'define' /usr/include > /dev/null
+./bin/agrep --cpuprofile /tmp/cpu.prof --no-ignore --hidden 'define' /usr/include > /dev/null
 
 # Memory profile of the same search
-./bin/gogrep --memprofile /tmp/mem.prof --no-ignore --hidden 'define' /usr/include > /dev/null
+./bin/agrep --memprofile /tmp/mem.prof --no-ignore --hidden 'define' /usr/include > /dev/null
 ```
 
 Redirect stdout to `/dev/null` so that terminal I/O does not dominate the profile. You want to measure the search, not the output.
@@ -614,7 +614,7 @@ Example output:
    420ms 35.00% 35.00%      420ms 35.00%  bytes.Index
    180ms 15.00% 50.00%      180ms 15.00%  syscall.Syscall6
    120ms 10.00% 60.00%      120ms 10.00%  runtime.memmove
-    96ms  8.00% 68.00%      300ms 25.00%  github.com/dl/gogrep/internal/matcher.(*BoyerMooreMatcher).FindAll
+    96ms  8.00% 68.00%      300ms 25.00%  github.com/DanielLaubacher/agrep/internal/matcher.(*BoyerMooreMatcher).FindAll
 ```
 
 Here, `bytes.Index` is the hottest function (35% of all CPU samples were inside `bytes.Index`). `syscall.Syscall6` at 15% represents kernel time for `pread`/`openat`/etc. `FindAll` has 8% flat (its own code) but 25% cumulative (including `bytes.Index` it calls).
@@ -648,7 +648,7 @@ This opens a browser to `http://localhost:6060` with several views:
 - **Wide bars near the bottom** = orchestration functions whose callees consume the most time. Optimizing these functions directly may not help -- you need to optimize their callees.
 - **Narrow spikes** = deep call stacks that consume little total time. Usually ignorable.
 
-Common gogrep hotspots in a flame graph:
+Common agrep hotspots in a flame graph:
 - `bytes.Index` -- the pattern search inner loop (AVX2 assembly in Go stdlib)
 - `unix.Pread` or `syscall.Syscall6` -- file I/O (pread syscall)
 - `unix.Getdents` -- directory listing (getdents64 syscall)
@@ -657,7 +657,7 @@ Common gogrep hotspots in a flame graph:
 
 ### The Profiling Script
 
-gogrep includes `scripts/profile.sh` which automates benchmarking and profiling:
+agrep includes `scripts/profile.sh` which automates benchmarking and profiling:
 
 ```bash
 # Run all benchmarks + profile
@@ -673,7 +673,7 @@ gogrep includes `scripts/profile.sh` which automates benchmarking and profiling:
 ./scripts/profile.sh prof web
 ```
 
-The script builds gogrep, runs hyperfine comparisons against ripgrep, then records both CPU and memory profiles:
+The script builds agrep, runs hyperfine comparisons against ripgrep, then records both CPU and memory profiles:
 
 ```bash
 # From scripts/profile.sh:
@@ -730,7 +730,7 @@ In the web UI, switch between "alloc_space" and "inuse_space" using the dropdown
 
 ### The runtime.GC() Trick
 
-As shown in gogrep's `main.go`, always call `runtime.GC()` before `WriteHeapProfile`:
+As shown in agrep's `main.go`, always call `runtime.GC()` before `WriteHeapProfile`:
 
 ```go
 runtime.GC()
@@ -760,12 +760,12 @@ Do not use `MemProfileRate = 1` in production -- it adds significant overhead. T
 
 ## strace for Syscall Analysis
 
-`strace` intercepts and logs every system call made by a process. For a program like gogrep that uses raw Linux syscalls (`getdents64`, `openat`, `pread`, `mmap`, `fadvise`, `madvise`, `writev`), strace is indispensable for understanding I/O patterns and finding wasted work.
+`strace` intercepts and logs every system call made by a process. For a program like agrep that uses raw Linux syscalls (`getdents64`, `openat`, `pread`, `mmap`, `fadvise`, `madvise`, `writev`), strace is indispensable for understanding I/O patterns and finding wasted work.
 
 ### Basic Syscall Summary
 
 ```bash
-strace -c ./bin/gogrep -l --no-ignore --hidden 'define' /usr/include > /dev/null 2> /tmp/strace.txt
+strace -c ./bin/agrep -l --no-ignore --hidden 'define' /usr/include > /dev/null 2> /tmp/strace.txt
 ```
 
 The `-c` flag produces a summary table instead of individual syscall logs:
@@ -781,16 +781,16 @@ The `-c` flag produces a summary table instead of individual syscall logs:
   1.23    0.002734          0       456       321 open  <-- 321 EPERM errors!
 ```
 
-The **errors column** is often the most revealing. In gogrep's development, strace discovered that `O_NOATIME` (which avoids writing atime metadata on every file open) was failing with EPERM on files not owned by the user, causing thousands of retried `openat` calls.
+The **errors column** is often the most revealing. In agrep's development, strace discovered that `O_NOATIME` (which avoids writing atime metadata on every file open) was failing with EPERM on files not owned by the user, causing thousands of retried `openat` calls.
 
 ### Filtering Specific Syscalls
 
 ```bash
 # Only trace file-open related syscalls
-strace -e trace=openat,open -c ./bin/gogrep -l 'define' /usr/include > /dev/null
+strace -e trace=openat,open -c ./bin/agrep -l 'define' /usr/include > /dev/null
 
 # Show individual syscall details (verbose mode, not summary)
-strace -e trace=openat -f ./bin/gogrep -l 'define' /usr/include 2>&1 | head -50
+strace -e trace=openat -f ./bin/agrep -l 'define' /usr/include 2>&1 | head -50
 
 # -f follows child threads. CRITICAL for Go programs: Go uses M:N threading,
 # so goroutines run on multiple OS threads. Without -f, you only see syscalls
@@ -805,13 +805,13 @@ Individual syscall output looks like:
 [pid 12345] openat(AT_FDCWD, "/usr/include/sys/types.h", O_RDONLY) = 3
 ```
 
-This shows the `O_NOATIME` fallback in action: the first open with `O_NOATIME` fails with EPERM (file owned by root, not the current user), so gogrep retries without `O_NOATIME`.
+This shows the `O_NOATIME` fallback in action: the first open with `O_NOATIME` fails with EPERM (file owned by root, not the current user), so agrep retries without `O_NOATIME`.
 
 ### Comparing Tools
 
 ```bash
-# Count syscalls for gogrep
-strace -c ./bin/gogrep -l --no-ignore --hidden 'define' /usr/include > /dev/null 2> gogrep_strace.txt
+# Count syscalls for agrep
+strace -c ./bin/agrep -l --no-ignore --hidden 'define' /usr/include > /dev/null 2> agrep_strace.txt
 
 # Count syscalls for ripgrep
 strace -c rg -l --no-ignore --hidden 'define' /usr/include > /dev/null 2> rg_strace.txt
@@ -819,11 +819,11 @@ strace -c rg -l --no-ignore --hidden 'define' /usr/include > /dev/null 2> rg_str
 # Compare the total calls columns
 ```
 
-Real results from gogrep development on `/usr/lib`:
+Real results from agrep development on `/usr/lib`:
 - **Before O_NOATIME fix**: 1.69M syscalls (thousands of wasted retries)
 - **After O_NOATIME fix + binary extension filtering**: 571K syscalls
 - **ripgrep**: 862K syscalls
-- gogrep now makes **fewer syscalls** than ripgrep because binary extension filtering (skipping `.o`, `.a`, `.so` files) avoids opening files that ripgrep still opens and detects as binary after reading.
+- agrep now makes **fewer syscalls** than ripgrep because binary extension filtering (skipping `.o`, `.a`, `.so` files) avoids opening files that ripgrep still opens and detects as binary after reading.
 
 ### Syscall Budget Analysis
 
@@ -851,14 +851,14 @@ With mmap, additional optional syscalls:
 - Files: 37K x 4 = ~148K syscalls
 - Directories: 4K x 3 = ~12K syscalls
 - **Theoretical minimum**: ~160K syscalls
-- **Actual (gogrep)**: ~571K (includes fadvise, error handling, stat calls, etc.)
+- **Actual (agrep)**: ~571K (includes fadvise, error handling, stat calls, etc.)
 - **Actual (ripgrep)**: ~862K (more syscalls due to different strategies)
 
 ### Timing Syscalls
 
 ```bash
 # Sort by total time spent in each syscall type
-strace -c -S time ./bin/gogrep -l 'define' /usr/include > /dev/null
+strace -c -S time ./bin/agrep -l 'define' /usr/include > /dev/null
 ```
 
 The `-S time` flag sorts by total wall-clock time rather than call count. This reveals what the process is actually waiting on:
@@ -872,13 +872,13 @@ The `-S time` flag sorts by total wall-clock time rather than call count. This r
 
 ```bash
 # Trace with timestamps (useful for identifying sequential vs parallel I/O)
-strace -T -e trace=openat,pread64,close -f ./bin/gogrep -l 'define' /usr/include > /dev/null 2>&1 | head -100
+strace -T -e trace=openat,pread64,close -f ./bin/agrep -l 'define' /usr/include > /dev/null 2>&1 | head -100
 
 # -T adds time spent in each syscall (shown in angle brackets at end of line):
 # openat(AT_FDCWD, "/usr/include/stdio.h", O_RDONLY|O_NOATIME) = 3 <0.000012>
 
 # Count by PID (see how work is distributed across Go's OS threads)
-strace -c -f ./bin/gogrep -l 'define' /usr/include > /dev/null 2>&1
+strace -c -f ./bin/agrep -l 'define' /usr/include > /dev/null 2>&1
 ```
 
 ---
@@ -891,14 +891,14 @@ hyperfine is a command-line benchmarking tool that handles warmup, multiple runs
 
 ```bash
 hyperfine --warmup 3 \
-    -n gogrep './bin/gogrep -l --no-ignore --hidden "define" /usr/include' \
+    -n agrep './bin/agrep -l --no-ignore --hidden "define" /usr/include' \
     -n rg 'rg -l --no-ignore --hidden "define" /usr/include'
 ```
 
 Output:
 
 ```
-Benchmark 1: gogrep
+Benchmark 1: agrep
   Time (mean +/- s):     144.2 ms +/-  3.1 ms    [User: 1.234 s, System: 0.567 s]
   Range (min ... max):   140.1 ms ... 152.3 ms    10 runs
 
@@ -907,7 +907,7 @@ Benchmark 2: rg
   Range (min ... max):   175.2 ms ... 189.1 ms    10 runs
 
 Summary
-  gogrep ran 1.25 +/- 0.04 times faster than rg
+  agrep ran 1.25 +/- 0.04 times faster than rg
 ```
 
 Key numbers:
@@ -926,11 +926,11 @@ Key numbers:
 - **`--prepare 'CMD'`**: Command to run before each timed run. Useful for clearing page cache:
   ```bash
   hyperfine --prepare 'sync; echo 3 | sudo tee /proc/sys/vm/drop_caches' \
-      './bin/gogrep -l "define" /usr/include'
+      './bin/agrep -l "define" /usr/include'
   ```
   This measures cold-cache performance, which is important for first-run user experience but much slower and noisier than warm-cache benchmarks.
 
-### gogrep's Benchmark Scripts
+### agrep's Benchmark Scripts
 
 **`scripts/benchmark.sh`** -- Comparative benchmarks against GNU grep and ripgrep:
 
@@ -939,7 +939,7 @@ Key numbers:
 ```
 
 This script:
-1. Builds gogrep if not already built.
+1. Builds agrep if not already built.
 2. Generates a 500K-line (~45MB) synthetic test file with mixed content (fixed strings, timestamps, error messages, code snippets).
 3. Runs 7 benchmark scenarios:
    - Fixed string search in large file
@@ -959,7 +959,7 @@ for i in $(seq 1 100000); do
     echo "line $i: ERROR: connection refused at port 8080"
     echo "line $i: 2024-01-15T10:30:00Z INFO request processed successfully"
     echo "line $i: function calculate(a, b) { return a + b; }"
-done > /tmp/gogrep_bench_data.txt
+done > /tmp/agrep_bench_data.txt
 ```
 
 This creates 500,000 lines of varied content, ensuring that different pattern types (fixed string, regex, case-insensitive) exercise different code paths.
@@ -1028,7 +1028,7 @@ The `scripts/benchmark.sh` and `scripts/profile.sh` scripts cover most of these 
 
 1. **Cache effects.** In a micro-benchmark, the 440KB test data stays hot in L1/L2 cache across all iterations. In production, each file is read once and never accessed again. The benchmark measures cache-hot throughput; production sees cache-cold throughput. This is a known and accepted limitation -- the purpose of micro-benchmarks is to measure algorithm speed, not I/O speed.
 
-2. **Dead code elimination.** If the benchmark does not use the result, the compiler may optimize the computation away entirely. The `b.Loop()` style helps mitigate this, but it is not foolproof. gogrep's benchmarks call `m.FindAll(data)` without using the return value, but because `FindAll` has side effects (it allocates and fills a `MatchSet`), the compiler cannot eliminate it.
+2. **Dead code elimination.** If the benchmark does not use the result, the compiler may optimize the computation away entirely. The `b.Loop()` style helps mitigate this, but it is not foolproof. agrep's benchmarks call `m.FindAll(data)` without using the return value, but because `FindAll` has side effects (it allocates and fills a `MatchSet`), the compiler cannot eliminate it.
 
 3. **Warm data, warm code.** The benchmark loop runs the same function hundreds of times. Branch predictors learn the pattern. Instruction caches hold the hot path. In production, the CPU encounters each file's data for the first time and the branch predictor has no history.
 
@@ -1051,11 +1051,11 @@ The `scripts/benchmark.sh` and `scripts/profile.sh` scripts cover most of these 
 
 2. **System noise.** Browser tabs, Slack, system updates, cron jobs -- all compete for CPU and I/O. Close everything. On a laptop, thermal throttling (CPU slows down when hot) adds variance. Desktop systems with active cooling are more stable.
 
-3. **Non-determinism.** gogrep uses a parallel walker and worker pool. Directory traversal order varies slightly between runs, which can change the file access pattern and thus page cache behavior. This is usually a minor effect but can add 1-3% variance.
+3. **Non-determinism.** agrep uses a parallel walker and worker pool. Directory traversal order varies slightly between runs, which can change the file access pattern and thus page cache behavior. This is usually a minor effect but can add 1-3% variance.
 
-### How gogrep Uses Both
+### How agrep Uses Both
 
-gogrep's testing strategy combines both levels:
+agrep's testing strategy combines both levels:
 
 | Level | Where | Purpose |
 |---|---|---|
@@ -1065,7 +1065,7 @@ gogrep's testing strategy combines both levels:
 
 The typical optimization workflow:
 
-1. **Macro** benchmark identifies a scenario where gogrep is slow (e.g., "gogrep is 2x slower than rg on case-insensitive search").
+1. **Macro** benchmark identifies a scenario where agrep is slow (e.g., "agrep is 2x slower than rg on case-insensitive search").
 2. **Profile** identifies the hotspot (e.g., "40% of CPU time in `toLowerASCII` scalar loop").
 3. **Micro** benchmark establishes the baseline for the hot function (`BenchmarkIndexCaseInsensitive_SIMD`).
 4. Optimize the hot function (e.g., SIMD case-folding with dual first+last byte prefilter).
@@ -1131,7 +1131,7 @@ From the `-benchmem` flag. These measure heap allocation pressure.
 | 1-10 KB | 3-10 | Acceptable. Worth investigating if called frequently. |
 | >10 KB | >10 | Investigate. Likely an optimization target. May indicate missing `sync.Pool` usage or unnecessary string conversions. |
 
-### Real Performance Numbers from gogrep
+### Real Performance Numbers from agrep
 
 **Matcher micro-benchmarks** (440KB data, 10K lines):
 
@@ -1147,7 +1147,7 @@ The 50x throughput difference between NoMatch (9.7 GB/s) and DenseMatch (190 MB/
 
 **End-to-end results (hyperfine):**
 
-| Scenario | gogrep | ripgrep | Ratio |
+| Scenario | agrep | ripgrep | Ratio |
 |---|---|---|---|
 | `/usr/include` `-l "define"` | ~144 ms | ~180 ms | 1.25x faster |
 | `/usr/include` `-i -l "define"` | ~144 ms | ~180 ms | 1.25x faster |
@@ -1198,7 +1198,7 @@ This is much less than 9.7 GB/s because syscall overhead (~571K syscalls at ~1us
 | `internal/input/input_test.go` | BufferedReader, MmapReader benchmarks |
 | `internal/matcher/match.go` | Matcher interface, pointer-free Match struct |
 | `internal/matcher/boyermoore.go` | BoyerMooreMatcher using SIMD-accelerated search |
-| `cmd/gogrep/main.go` | CPU/memory profiling flags, signal handling |
+| `cmd/agrep/main.go` | CPU/memory profiling flags, signal handling |
 | `Makefile` | Build, test, bench targets |
 | `scripts/benchmark.sh` | Comparative benchmarks vs grep and rg |
 | `scripts/profile.sh` | Profiling + hyperfine benchmarks vs rg |

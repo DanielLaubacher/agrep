@@ -1,6 +1,6 @@
 # Memory Management: mmap, Adaptive Reading, and Buffer Lifecycle
 
-This document covers how gogrep manages memory across its entire file-processing pipeline. It explains memory-mapped I/O from first principles, the adaptive reader that selects between strategies, the pooled buffered reader that eliminates per-file allocations, and the buffer lifecycle that threads ownership from reader to formatter across goroutine boundaries. It also covers the two-layer binary file defense that avoids wasting I/O on non-text files.
+This document covers how agrep manages memory across its entire file-processing pipeline. It explains memory-mapped I/O from first principles, the adaptive reader that selects between strategies, the pooled buffered reader that eliminates per-file allocations, and the buffer lifecycle that threads ownership from reader to formatter across goroutine boundaries. It also covers the two-layer binary file defense that avoids wasting I/O on non-text files.
 
 ---
 
@@ -9,7 +9,7 @@ This document covers how gogrep manages memory across its entire file-processing
 1. [Memory-Mapped I/O (mmap)](#1-memory-mapped-io-mmap)
    - [What mmap Is](#11-what-mmap-is)
    - [Virtual Memory Fundamentals](#12-virtual-memory-fundamentals)
-   - [The mmap Lifecycle in gogrep](#13-the-mmap-lifecycle-in-gogrep)
+   - [The mmap Lifecycle in agrep](#13-the-mmap-lifecycle-in-agrep)
    - [mmap vs read(): When Each Wins](#14-mmap-vs-read-when-each-wins)
    - [Why Not MAP_POPULATE](#15-why-not-map_populate)
 2. [Adaptive Reader --- Smart Strategy Selection](#2-adaptive-reader--smart-strategy-selection)
@@ -78,11 +78,11 @@ To understand mmap properly, you need to understand the virtual memory system it
 4. Updates the page table entry to point to the physical page.
 5. Returns control to the faulting instruction, which retries and succeeds.
 
-A **minor page fault** occurs when the data is already in the page cache (another process mapped it, or the kernel pre-read it). The handler just updates the page table --- no disk I/O. A **major page fault** requires actual disk I/O. The `fadvise` and `madvise` hints in gogrep are specifically designed to convert major faults into minor faults by triggering readahead.
+A **minor page fault** occurs when the data is already in the page cache (another process mapped it, or the kernel pre-read it). The handler just updates the page table --- no disk I/O. A **major page fault** requires actual disk I/O. The `fadvise` and `madvise` hints in agrep are specifically designed to convert major faults into minor faults by triggering readahead.
 
 **Pages.** Memory is managed in pages (typically 4KB on x86-64). Even if you only read 1 byte from a file, the kernel loads an entire 4KB page. For small files, this means mmap loads proportionally more data than needed, which is one reason it loses to buffered reads for small files.
 
-### 1.3 The mmap Lifecycle in gogrep
+### 1.3 The mmap Lifecycle in agrep
 
 The implementation lives in `internal/input/mmap.go`. Here is the complete `readMmap` function with every step explained.
 
@@ -111,7 +111,7 @@ The arguments:
 - `PROT_READ`: the mapping is read-only. Any write attempt will cause a segfault (SIGSEGV). This is correct for grep --- we never modify file content. Read-only protection also means the kernel never needs to set up copy-on-write page table entries (the "dirty" bit is never set).
 - `MAP_PRIVATE`: create a private, copy-on-write mapping. Even though we never write (and PROT_READ enforces this), `MAP_PRIVATE` is more efficient than `MAP_SHARED` for read-only use. With `MAP_SHARED`, the kernel must maintain page coherency guarantees: if another process modifies the file, the change must be visible through the mapping. With `MAP_PRIVATE`, the kernel can serve pages directly from the page cache without coherency tracking overhead. The kernel can also share physical pages between processes that have both mapped the same file with `MAP_PRIVATE`, because the copy-on-write mechanism only kicks in on writes (which never happen).
 
-If `Mmap` fails (e.g., the file was truncated between `fstat` and `mmap`, or the process hit its virtual memory limit), gogrep falls back to the buffered reader:
+If `Mmap` fails (e.g., the file was truncated between `fstat` and `mmap`, or the process hit its virtual memory limit), agrep falls back to the buffered reader:
 
 ```go
 if err != nil {
@@ -157,7 +157,7 @@ Three operations, and the order matters:
 
 2. `Munmap`: removes the virtual memory mapping. After this call, the `data` slice is dangling --- any access to it will segfault. This is why the Closer must only be called after all formatting is complete.
 
-3. `Close(fd)`: closes the file descriptor. This must happen *after* munmap, not before. While the Linux kernel documentation says that closing the fd does not invalidate an existing mapping (the kernel holds an internal reference to the file's inode), the fd must be kept open during the mapping's lifetime because page faults on the mapped region require the kernel to read from the file. In practice, closing the fd before munmap works on Linux because the kernel increments the inode's reference count during mmap, but gogrep follows the conservative ordering: munmap first, close second.
+3. `Close(fd)`: closes the file descriptor. This must happen *after* munmap, not before. While the Linux kernel documentation says that closing the fd does not invalidate an existing mapping (the kernel holds an internal reference to the file's inode), the fd must be kept open during the mapping's lifetime because page faults on the mapped region require the kernel to read from the file. In practice, closing the fd before munmap works on Linux because the kernel increments the inode's reference count during mmap, but agrep follows the conservative ordering: munmap first, close second.
 
 ### 1.4 mmap vs read(): When Each Wins
 
@@ -172,11 +172,11 @@ Three operations, and the order matters:
 - TLB pollution: each mapped page consumes a TLB entry. Small files churn TLB entries rapidly, causing TLB misses that slow down the rest of the program.
 - Kernel overhead: `mmap` and `munmap` are more expensive system calls than `read` because they modify the process's virtual memory layout, which requires updating the kernel's VMA (Virtual Memory Area) structures under locks.
 
-**The crossover point** depends on hardware and kernel version, but is typically in the hundreds-of-KB to low-MB range. gogrep defaults to 8MB, which was determined empirically.
+**The crossover point** depends on hardware and kernel version, but is typically in the hundreds-of-KB to low-MB range. agrep defaults to 8MB, which was determined empirically.
 
 ### 1.5 Why Not MAP_POPULATE
 
-The `MAP_POPULATE` flag tells the kernel to pre-fault all pages during the `mmap` call itself, rather than waiting for demand-paging. gogrep intentionally omits this flag:
+The `MAP_POPULATE` flag tells the kernel to pre-fault all pages during the `mmap` call itself, rather than waiting for demand-paging. agrep intentionally omits this flag:
 
 ```go
 // FADV_SEQUENTIAL + MADV_SEQUENTIAL handle readahead;
@@ -265,7 +265,7 @@ The threshold is configurable so users can tune it for their workload. For examp
 
 ### 2.4 O_NOATIME and the Atomic Fallback
 
-Every file open in gogrep uses `O_NOATIME` (`internal/input/mmap.go`, line 111-124):
+Every file open in agrep uses `O_NOATIME` (`internal/input/mmap.go`, line 111-124):
 
 ```go
 var noatimeWorks atomic.Int32
@@ -292,7 +292,7 @@ func openFile(path string) (int, error) {
 - The process's effective UID matches the file's owner, or
 - The process has `CAP_FOWNER` capability.
 
-If neither condition holds, `open()` with `O_NOATIME` returns `EPERM`. gogrep handles this with a global atomic flag:
+If neither condition holds, `open()` with `O_NOATIME` returns `EPERM`. agrep handles this with a global atomic flag:
 
 1. First call: try with `O_NOATIME`. If `EPERM`, atomically set `noatimeWorks` to 0.
 2. All subsequent calls: skip `O_NOATIME` entirely (one fewer syscall attempt).
@@ -307,7 +307,7 @@ Note: the walker (`internal/walker/walker.go`, line 14-33) has its own identical
 
 ### 3.1 The Pool Design
 
-For files below the mmap threshold, gogrep uses pooled buffers to avoid per-file heap allocations (`internal/input/buffered.go`):
+For files below the mmap threshold, agrep uses pooled buffers to avoid per-file heap allocations (`internal/input/buffered.go`):
 
 ```go
 var bufPool = sync.Pool{
@@ -388,7 +388,7 @@ for totalRead < int(size) {
 **Why pread instead of read:**
 - `pread(fd, buf, offset)` reads from a specific offset without modifying the file descriptor's seek position.
 - `read(fd, buf)` reads from the current seek position and advances it.
-- With `pread`, there is no shared seek state, so multiple goroutines can theoretically read from the same fd without interference (though gogrep opens separate fds per file).
+- With `pread`, there is no shared seek state, so multiple goroutines can theoretically read from the same fd without interference (though agrep opens separate fds per file).
 - More importantly, `pread` is a single syscall that combines seek + read atomically. Using `read` after `lseek` would be two syscalls.
 
 **Why a loop:**
@@ -435,7 +435,7 @@ The GC can reclaim pool entries between cycles if memory pressure is high. This 
 
 ### 4.1 The Zero-Copy Chain
 
-This is the most important section for understanding gogrep's memory architecture. A file's data buffer passes through multiple stages and crosses goroutine boundaries without being copied:
+This is the most important section for understanding agrep's memory architecture. A file's data buffer passes through multiple stages and crosses goroutine boundaries without being copied:
 
 ```
 Reader.Read(path)
@@ -690,7 +690,7 @@ Same pattern: format first, then close. No goroutine boundary crossing, so the l
 
 ### 4.6 What Happens If You Get It Wrong
 
-Buffer lifecycle bugs are among the most insidious bugs in gogrep because they manifest as:
+Buffer lifecycle bugs are among the most insidious bugs in agrep because they manifest as:
 
 **For mmap buffers:**
 - **SIGSEGV** if the buffer is accessed after `Munmap`. The process crashes with no recovery. The segfault will point to a user-space address in the unmapped range, not to a kernel address, so it will be caught by the Go runtime's signal handler and reported as a panic.
@@ -831,7 +831,7 @@ The two-layer approach is ordered by cost:
 - Layer 1 (extension check): ~10ns per file (string operations on already-available filename).
 - Layer 2 (NUL byte scan): ~500ns per file (requires opening and reading the file first, but the scan itself is ~100ns).
 
-By putting the cheap check first, gogrep avoids the expensive check for the vast majority of binary files.
+By putting the cheap check first, agrep avoids the expensive check for the vast majority of binary files.
 
 ---
 
@@ -863,7 +863,7 @@ The `Closer` contract:
 
 ### 6.2 The noopCloser Optimization
 
-For empty files, gogrep uses a package-level function instead of an anonymous closure:
+For empty files, agrep uses a package-level function instead of an anonymous closure:
 
 ```go
 func noopCloser() error { return nil }
@@ -949,7 +949,7 @@ This design is a direct application of the "pointer-free hot data" pattern. If `
 - `Get()` first checks the local shard (lock-free), then steals from other shards (with locking).
 - `Put()` always goes to the local shard.
 
-Because gogrep runs `NumCPU * 2` worker goroutines, and Go typically has `NumCPU` P's, there is 2:1 contention on pool shards. In practice, this works well because:
+Because agrep runs `NumCPU * 2` worker goroutines, and Go typically has `NumCPU` P's, there is 2:1 contention on pool shards. In practice, this works well because:
 - Workers alternate between reading (pool Get/Put) and matching (CPU-bound). They are rarely all doing pool operations simultaneously.
 - Pool contention shows up as slightly higher allocation rates (more `New()` calls), not as deadlocks or crashes.
 - The pool's victim cache (introduced in Go 1.13) smooths over GC-triggered pool clearing.
@@ -960,8 +960,8 @@ The steady-state pool population is approximately `NumCPU` buffers (one per P sh
 
 ## 8. Cross-References
 
-- **Linux syscalls (open, fstat, pread, fadvise, madvise, mmap, munmap, writev, O_NOATIME)**: See `02-linux-syscalls.md` for detailed explanations of each syscall and why gogrep uses them instead of Go's `os` package.
-- **GC optimization, sync.Pool internals, pointer-free struct design**: See `06-gc-and-allocation-optimization.md` for comprehensive coverage of how gogrep minimizes GC overhead.
+- **Linux syscalls (open, fstat, pread, fadvise, madvise, mmap, munmap, writev, O_NOATIME)**: See `02-linux-syscalls.md` for detailed explanations of each syscall and why agrep uses them instead of Go's `os` package.
+- **GC optimization, sync.Pool internals, pointer-free struct design**: See `06-gc-and-allocation-optimization.md` for comprehensive coverage of how agrep minimizes GC overhead.
 - **Concurrency patterns (OrderedWriter, scheduler worker pool, channel-based pipeline)**: See `05-concurrency-patterns.md` for how the buffer lifecycle interacts with goroutine scheduling and ordered output.
 - **Matcher architecture (search-then-split, SIMD acceleration)**: See `04-pattern-matching.md` for how matchers consume the buffer and produce MatchSets.
 - **Walker (getdents64, dirent parsing, parallel BFS)**: See `02-linux-syscalls.md` for the raw directory traversal that feeds files to the scheduler.

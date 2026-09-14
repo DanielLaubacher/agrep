@@ -1,6 +1,6 @@
-# String Search and Pattern Matching Algorithms in gogrep
+# String Search and Pattern Matching Algorithms in agrep
 
-This document is an exhaustive reference on the pattern matching algorithms used in gogrep. It covers the abstract interface, the architectural decision that dominates performance (search-then-split), each concrete matcher implementation, the SIMD acceleration layer, the selection heuristic, context matching, and the pointer-free data model. Every concept is explained from first principles, with file paths and code drawn directly from the codebase.
+This document is an exhaustive reference on the pattern matching algorithms used in agrep. It covers the abstract interface, the architectural decision that dominates performance (search-then-split), each concrete matcher implementation, the SIMD acceleration layer, the selection heuristic, context matching, and the pointer-free data model. Every concept is explained from first principles, with file paths and code drawn directly from the codebase.
 
 ---
 
@@ -31,7 +31,7 @@ This document is an exhaustive reference on the pattern matching algorithms used
 
 **File:** `internal/matcher/match.go`
 
-All pattern matching in gogrep is abstracted behind a single interface:
+All pattern matching in agrep is abstracted behind a single interface:
 
 ```go
 type Matcher interface {
@@ -54,13 +54,13 @@ This method is used when the output needs to display matching lines with their l
 
 `CountAll(data []byte) int` counts how many lines contain at least one match, without constructing `Match` structs or extracting line content. It only needs to determine line boundaries around match offsets, not extract the content or compute highlight positions.
 
-This method is used by `gogrep -c` (count mode). It avoids allocating `Match` structs entirely.
+This method is used by `agrep -c` (count mode). It avoids allocating `Match` structs entirely.
 
 ### MatchExists -- Early Return
 
 `MatchExists(data []byte) bool` returns `true` as soon as it finds the first match in the data, without any extraction. It does not count, does not resolve line boundaries, and does not build any data structures. It simply answers: "Is there at least one match?"
 
-This method is used by `gogrep -l` (files-with-matches mode) and `gogrep -L` (files-without-matches mode). Once a match is found, the entire file can be skipped. For a 100MB file where the pattern appears on line 3, `MatchExists` might examine only the first few hundred bytes.
+This method is used by `agrep -l` (files-with-matches mode) and `agrep -L` (files-without-matches mode). Once a match is found, the entire file can be skipped. For a 100MB file where the pattern appears on line 3, `MatchExists` might examine only the first few hundred bytes.
 
 ### FindLine -- Single Line Matching
 
@@ -74,13 +74,13 @@ A simpler design would have a single `FindAll` method, with callers inspecting t
 - `CountAll` avoids allocating `Match` structs and position arrays entirely. It only needs to track line boundaries.
 - `FindAll` does the full work only when the output actually needs match metadata.
 
-This stratification means that `gogrep -l` (list matching files) operates at a fundamentally different cost than `gogrep` (display matches). The interface makes this explicit.
+This stratification means that `agrep -l` (list matching files) operates at a fundamentally different cost than `agrep` (display matches). The interface makes this explicit.
 
 ---
 
 ## 2. The Search-Then-Split Architecture
 
-This is the single most important algorithmic decision in gogrep. It is the primary reason the tool achieves multi-gigabyte-per-second throughput on common workloads.
+This is the single most important algorithmic decision in agrep. It is the primary reason the tool achieves multi-gigabyte-per-second throughput on common workloads.
 
 ### The Traditional Approach: Split-Then-Search
 
@@ -100,9 +100,9 @@ For a 1MB file with 20,000 lines and 5 matches, this approach performs 20,000 in
 
 Worse, the line-splitting pass itself must touch every byte of the file to find newlines, which is O(n) work before any searching even begins.
 
-### gogrep's Approach: Search-Then-Split
+### agrep's Approach: Search-Then-Split
 
-gogrep inverts the order:
+agrep inverts the order:
 
 ```
 file bytes  -->  search entire buffer  -->  for each match offset: extract line boundaries
@@ -130,11 +130,11 @@ With split-then-search, that same 1MB file requires splitting into 20,000 lines 
 
 The search operation benefits enormously from operating on large, contiguous buffers. SIMD instructions process 32 bytes at a time, and branch prediction works well for long sequential scans. The line extraction operations are trivially cheap -- finding the nearest newline before and after a known offset is a bounded scan of at most a few hundred bytes (controlled by `maxCols`).
 
-By doing the expensive operation (pattern search) on the bulk data and the cheap operation (newline finding) on small windows, gogrep maximizes throughput.
+By doing the expensive operation (pattern search) on the bulk data and the cheap operation (newline finding) on small windows, agrep maximizes throughput.
 
 ### Measured Impact
 
-On the gogrep benchmark suite (440KB data, 10K lines):
+On the agrep benchmark suite (440KB data, 10K lines):
 
 | Scenario | Throughput | What Happens |
 |----------|-----------|--------------|
@@ -150,7 +150,7 @@ The 50x throughput difference between no-match and dense-match shows clearly how
 
 **File:** `internal/matcher/lineindex.go`
 
-Once a search returns a match offset (a byte position in the file buffer), gogrep must determine the line that contains that offset. This is the job of `snippetFromOffset`.
+Once a search returns a match offset (a byte position in the file buffer), agrep must determine the line that contains that offset. This is the job of `snippetFromOffset`.
 
 ### The snippetFromOffset Function
 
@@ -225,7 +225,7 @@ These are not hand-written loops. Go's `bytes.IndexByte` and `bytes.LastIndexByt
 
 Computing line numbers is one of the hidden costs in a grep tool. The naive approach -- counting all newlines from the start of the file to the match offset -- is O(file size) per match. For a file with 1000 matches, that would be O(1000 * file size).
 
-gogrep uses incremental computation. It maintains a running line number counter and only counts the newlines between consecutive match offsets:
+agrep uses incremental computation. It maintains a running line number counter and only counts the newlines between consecutive match offsets:
 
 ```go
 matches := make([]Match, 0, len(offsets))
@@ -256,7 +256,7 @@ The incremental approach guarantees that line number computation is at most `O(n
 
 ### The needLineNums Optimization
 
-The `needLineNums` field is set based on whether the output format actually requires line numbers. When it is `false` (e.g., in `gogrep -l` mode or when line numbers are not displayed), the `bytes.Count` call is skipped entirely and all matches get `lineNum = 1`. This saves a significant amount of work for modes that do not display line numbers.
+The `needLineNums` field is set based on whether the output format actually requires line numbers. When it is `false` (e.g., in `agrep -l` mode or when line numbers are not displayed), the `bytes.Count` call is skipped entirely and all matches get `lineNum = 1`. This saves a significant amount of work for modes that do not display line numbers.
 
 ---
 
@@ -264,9 +264,9 @@ The `needLineNums` field is set based on whether the output format actually requ
 
 **File:** `internal/matcher/lineindex.go`, function `matchSetFromOffsets`
 
-When multiple match offsets fall on the same line, gogrep must not create duplicate `Match` structs. Consider searching for "the" in the line `"the quick brown the lazy"`. The search finds offsets at positions 0 and 16, but both are on the same line. The output should show the line once, with two highlight positions.
+When multiple match offsets fall on the same line, agrep must not create duplicate `Match` structs. Consider searching for "the" in the line `"the quick brown the lazy"`. The search finds offsets at positions 0 and 16, but both are on the same line. The output should show the line once, with two highlight positions.
 
-gogrep handles this by tracking the start position of the last snippet:
+agrep handles this by tracking the start position of the last snippet:
 
 ```go
 lastSnippetStart := -1
@@ -316,7 +316,7 @@ Using `snippetStart` instead of `lineNum` for deduplication is a subtle correctn
 
 **File:** `internal/matcher/boyermoore.go`
 
-For single fixed patterns (the most common grep use case), gogrep uses `BoyerMooreMatcher`. Despite its name, the actual search is delegated to optimized lower-level functions rather than implementing the classic Boyer-Moore algorithm directly.
+For single fixed patterns (the most common grep use case), agrep uses `BoyerMooreMatcher`. Despite its name, the actual search is delegated to optimized lower-level functions rather than implementing the classic Boyer-Moore algorithm directly.
 
 ### The Boyer-Moore Algorithm: Background
 
@@ -336,9 +336,9 @@ The Boyer-Moore-Horspool algorithm (1980) uses only the bad character rule appli
 2. The simpler code has better branch prediction and instruction-level parallelism.
 3. For short patterns (typical in grep), the good suffix rule rarely provides additional benefit.
 
-### What gogrep Actually Does
+### What agrep Actually Does
 
-Rather than implementing Boyer-Moore or Horspool directly, gogrep delegates to optimized primitives:
+Rather than implementing Boyer-Moore or Horspool directly, agrep delegates to optimized primitives:
 
 ```go
 type BoyerMooreMatcher struct {
@@ -391,7 +391,7 @@ func (m *BoyerMooreMatcher) MatchExists(data []byte) bool {
 }
 ```
 
-Uses `simd.Index` (singular) rather than `simd.IndexAll`. `Index` returns as soon as it finds the first occurrence. For `gogrep -l` on a large file where the pattern appears on line 3, this might examine only a few hundred bytes.
+Uses `simd.Index` (singular) rather than `simd.IndexAll`. `Index` returns as soon as it finds the first occurrence. For `agrep -l` on a large file where the pattern appears on line 3, this might examine only a few hundred bytes.
 
 **CountAll** -- Counting without allocation:
 
@@ -656,7 +656,7 @@ This converts uppercase ASCII letters to lowercase 32 bytes at a time:
 
 **File:** `internal/matcher/ahocorasick.go`
 
-When multiple fixed patterns are given (e.g., `gogrep -F -e 'error' -e 'warning' -e 'fatal'`), gogrep uses the Aho-Corasick algorithm. This is a fundamentally different approach from running Boyer-Moore once per pattern -- it searches for all patterns simultaneously in a single pass.
+When multiple fixed patterns are given (e.g., `agrep -F -e 'error' -e 'warning' -e 'fatal'`), agrep uses the Aho-Corasick algorithm. This is a fundamentally different approach from running Boyer-Moore once per pattern -- it searches for all patterns simultaneously in a single pass.
 
 ### The Aho-Corasick Algorithm: Background
 
@@ -853,7 +853,7 @@ func (m *AhoCorasickMatcher) MatchExists(data []byte) bool {
 }
 ```
 
-This is identical to `searchLine` but returns `true` immediately on the first match. For `gogrep -l` with multiple patterns, this is extremely efficient -- it processes each byte at most once and stops as soon as any pattern matches.
+This is identical to `searchLine` but returns `true` immediately on the first match. For `agrep -l` with multiple patterns, this is extremely efficient -- it processes each byte at most once and stops as soon as any pattern matches.
 
 ---
 
@@ -861,7 +861,7 @@ This is identical to `searchLine` but returns `true` immediately on the first ma
 
 **File:** `internal/matcher/regex.go`
 
-For patterns containing regex metacharacters (`\.+*?()|[]{}^$`), gogrep uses Go's `regexp` package, which implements the RE2 algorithm.
+For patterns containing regex metacharacters (`\.+*?()|[]{}^$`), agrep uses Go's `regexp` package, which implements the RE2 algorithm.
 
 ### RE2: Background
 
@@ -947,7 +947,7 @@ func (m *RegexMatcher) CountAll(data []byte) int {
 
 **File:** `internal/matcher/pcre.go`
 
-For patterns requiring PCRE2 features (lookahead `(?=...)`, lookbehind `(?<=...)`, backreferences `\1`, atomic groups `(?>...)`, possessive quantifiers `++`, conditional patterns, etc.), gogrep supports PCRE2 via the `go.elara.ws/pcre` package.
+For patterns requiring PCRE2 features (lookahead `(?=...)`, lookbehind `(?<=...)`, backreferences `\1`, atomic groups `(?>...)`, possessive quantifiers `++`, conditional patterns, etc.), agrep supports PCRE2 via the `go.elara.ws/pcre` package.
 
 ### Implementation
 
@@ -1006,7 +1006,7 @@ Unlike Go's `regexp.Regexp`, the PCRE matcher holds resources that must be expli
 
 The `go.elara.ws/pcre` package uses `modernc.org/libc`, which is a C standard library transpiled to Go. This transpiled code performs pointer arithmetic that triggers Go's `checkptr` instrumentation under the race detector. This means:
 
-- PCRE tests crash under `go test -race`. The test suite uses `GOGREP_SKIP_PCRE=1` to skip PCRE tests when the race detector is enabled.
+- PCRE tests crash under `go test -race`. The test suite uses `AGREP_SKIP_PCRE=1` to skip PCRE tests when the race detector is enabled.
 - PCRE benchmarks crash due to a GC finalizer SIGSEGV. PCRE is excluded from `make bench`.
 - The Makefile handles this automatically: it runs race-enabled tests first (skipping PCRE), then PCRE tests separately without `-race`.
 
@@ -1061,7 +1061,7 @@ func isLiteral(pattern string) bool {
 
 This function checks if a pattern contains any regex metacharacters. If not, the pattern can be treated as a fixed string and searched with the much faster SIMD-accelerated `BoyerMooreMatcher`.
 
-This means `gogrep 'hello'` (without any flags) automatically uses `BoyerMooreMatcher` instead of `RegexMatcher`, because `hello` contains no metacharacters. The user gets SIMD-accelerated search without needing to pass `-F`.
+This means `agrep 'hello'` (without any flags) automatically uses `BoyerMooreMatcher` instead of `RegexMatcher`, because `hello` contains no metacharacters. The user gets SIMD-accelerated search without needing to pass `-F`.
 
 ### Why This Matters
 
@@ -1082,7 +1082,7 @@ Automatically detecting literal patterns and routing them to `BoyerMooreMatcher`
 
 **File:** `internal/matcher/context.go`
 
-The `ContextMatcher` wraps any inner `Matcher` to add `-B` (before), `-A` (after), and `-C` (context) support. This is the one place where gogrep uses the split-then-search approach rather than search-then-split.
+The `ContextMatcher` wraps any inner `Matcher` to add `-B` (before), `-A` (after), and `-C` (context) support. This is the one place where agrep uses the split-then-search approach rather than search-then-split.
 
 ### Why Context Requires Split-Then-Search
 
@@ -1419,9 +1419,9 @@ func countLocsUniqueLines(data []byte, locs [][]int) int {
 
 ## 16. Performance Analysis
 
-### Why gogrep Is Fast: A Summary
+### Why agrep Is Fast: A Summary
 
-The performance of gogrep's pattern matching comes from the combination of several techniques, each addressing a different bottleneck:
+The performance of agrep's pattern matching comes from the combination of several techniques, each addressing a different bottleneck:
 
 1. **Search-then-split** eliminates per-line overhead for the common case (no match or sparse match). The file is searched as a single contiguous buffer, leveraging SIMD.
 
@@ -1429,7 +1429,7 @@ The performance of gogrep's pattern matching comes from the combination of sever
 
 3. **Automatic literal detection** routes simple patterns to the fastest matcher without requiring the user to pass `-F`.
 
-4. **Tiered methods** (`MatchExists`/`CountAll`/`FindAll`) allow callers to pay only for what they need. `gogrep -l` never builds Match structs.
+4. **Tiered methods** (`MatchExists`/`CountAll`/`FindAll`) allow callers to pay only for what they need. `agrep -l` never builds Match structs.
 
 5. **Pointer-free Match structs** eliminate GC scanning overhead for large result sets.
 
@@ -1467,9 +1467,9 @@ End-to-end benchmarks (37K files, `--no-ignore --hidden -l`):
 
 | Tool | Time | Notes |
 |------|------|-------|
-| gogrep | ~304ms | SIMD + search-then-split |
+| agrep | ~304ms | SIMD + search-then-split |
 | ripgrep | ~301ms | Essentially tied |
-| gogrep (case-insensitive, /usr/include) | 144ms | 1.25x faster than ripgrep (180ms) |
+| agrep (case-insensitive, /usr/include) | 144ms | 1.25x faster than ripgrep (180ms) |
 
 ---
 

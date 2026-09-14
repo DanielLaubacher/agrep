@@ -7,10 +7,10 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/dl/gogrep/internal/cli"
+	"github.com/DanielLaubacher/agrep/internal/cli"
 )
 
-const usage = `Usage: gogrep [OPTIONS] PATTERN [FILE...]
+const usage = `Usage: agrep [OPTIONS] PATTERN [FILE...]
 
 A high-performance, Linux-focused search tool for pattern matching in files.
 
@@ -82,9 +82,9 @@ Pipeline:
   Combine short flags freely: -Ftoe 'pattern' = fixed + pipe + only-match.
 
   Examples:
-    gogrep -Fe 'ERROR' -toe '\d+'          # SIMD prefilter, then extract digits
-    gogrep -Fe 'HTTP' -te 'status=\d+' -toe '\d+'  # three-stage narrowing
-    gogrep -oe '\d+' file.log              # only-matching (like grep -o)
+    agrep -Fe 'ERROR' -toe '\d+'          # SIMD prefilter, then extract digits
+    agrep -Fe 'HTTP' -te 'status=\d+' -toe '\d+'  # three-stage narrowing
+    agrep -oe '\d+' file.log              # only-matching (like grep -o)
 `
 
 // profileFlags holds the --cpuprofile/--memprofile targets, which are
@@ -503,6 +503,6 @@ func atoi(s string, flag string) int {
 }
 
 func die(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "gogrep: "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, "agrep: "+format+"\n", args...)
 	os.Exit(2)
 }

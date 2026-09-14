@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dl/gogrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
 )
 
 // makeMatchSet creates a MatchSet from line content strings and positions for testing.

@@ -15,7 +15,7 @@ import (
 
 // convertEPUB extracts an EPUB natively: it is a ZIP of XHTML chapters
 // referenced, in reading order, by an OPF "spine". Headings become
-// Markdown '#' headings (so gogrep --sections works on the mirror);
+// Markdown '#' headings (so agrep --sections works on the mirror);
 // everything else becomes plain paragraphs. Falls back to pandoc when the
 // native path yields nothing useful.
 func convertEPUB(src string) ([]byte, int, string, string, error) {

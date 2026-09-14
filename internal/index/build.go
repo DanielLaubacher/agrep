@@ -13,7 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/dl/gogrep/internal/walker"
+	"github.com/DanielLaubacher/agrep/internal/walker"
 )
 
 // BuildStats reports how much work a build actually did.

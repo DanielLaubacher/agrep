@@ -5,8 +5,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/dl/gogrep/internal/matcher"
-	"github.com/dl/gogrep/internal/regex"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/regex"
 )
 
 // benchCorpus mimics the errport benchmark shape: ~2% ERROR lines among

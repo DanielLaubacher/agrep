@@ -101,7 +101,7 @@ func (ow *OrderedWriter) writeResult(out []byte, r Result) []byte {
 	if r.Err != nil {
 		// Never silent: stderr for humans; the formatter additionally
 		// puts an error object in the stream for JSON consumers.
-		fmt.Fprintf(os.Stderr, "gogrep: %s: %v\n", r.FilePath, r.Err)
+		fmt.Fprintf(os.Stderr, "agrep: %s: %v\n", r.FilePath, r.Err)
 	}
 	out = ow.formatter.Format(out, r, ow.multiFile)
 	if r.Closer != nil {

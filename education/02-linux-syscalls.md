@@ -1,6 +1,6 @@
 # Linux Syscalls and the Direct Kernel Interface
 
-This document explains how gogrep bypasses Go's standard library to interact
+This document explains how agrep bypasses Go's standard library to interact
 directly with the Linux kernel through system calls. Every decision here is
 motivated by measurable performance: fewer allocations, fewer syscalls, less
 latency. The goal is to understand *why* each syscall is used, *how* the kernel
@@ -92,10 +92,10 @@ n, err := f.Read(buf)           // 10. Calls unix.Read internally
                                 // 12. Checks for io.EOF translation
 ```
 
-Now compare gogrep's approach using direct syscalls:
+Now compare agrep's approach using direct syscalls:
 
 ```go
-// gogrep's approach (from internal/input/mmap.go and internal/input/buffered.go)
+// agrep's approach (from internal/input/mmap.go and internal/input/buffered.go)
 fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOATIME, 0)  // 1. Returns raw int fd
                                                                // 2. No heap allocation
                                                                // 3. No finalizer
@@ -119,7 +119,7 @@ unix.Close(fd)                                                 // 11. Immediate 
 
 Every `os.Open` call allocates an `os.File` struct on the heap. This struct
 contains an internal `file` struct with a file descriptor, a name string, a
-directory info pointer, and a finalizer. For gogrep searching 37,000+ files in
+directory info pointer, and a finalizer. For agrep searching 37,000+ files in
 a typical recursive scan, that is 37,000 heap allocations just for file handles
 -- objects that live for microseconds before being closed.
 
@@ -159,7 +159,7 @@ zero-allocation.
 
 ### Quantifying the Difference
 
-In gogrep's end-to-end benchmark (37K files, `--no-ignore --hidden -l`), the
+In agrep's end-to-end benchmark (37K files, `--no-ignore --hidden -l`), the
 total syscall count is approximately 672,000: for each file, that is
 `open + fstat + pread + close`, plus `getdents` calls for each directory. At
 this scale, saving even one allocation per file adds up to tens of thousands of
@@ -196,9 +196,9 @@ the `*os.File` allocation for the directory handle. And if you need the file
 type (regular file vs. directory vs. symlink), `os.DirEntry.Type()` may trigger
 an additional `Lstat` call per entry.
 
-### What gogrep Does
+### What agrep Does
 
-gogrep calls `unix.Getdents` directly and parses the raw kernel response.
+agrep calls `unix.Getdents` directly and parses the raw kernel response.
 
 **Source: `internal/walker/walker.go`, lines 173-184**
 
@@ -359,13 +359,13 @@ single `MOVZX` instruction instead of two loads and a shift.
 
 **The `d_type` field**: This is the key advantage of raw `getdents64`. The
 kernel provides the file type (regular file, directory, symlink, etc.) as a
-single byte in each dirent entry. This means gogrep can distinguish files from
+single byte in each dirent entry. This means agrep can distinguish files from
 directories without making a separate `stat` or `lstat` syscall per entry. For
 a directory with 1,000 files, that eliminates 1,000 syscalls.
 
 **`DT_UNKNOWN` fallback**: Some filesystems (notably NFS, and some older
 filesystems) do not populate `d_type`, returning `DT_UNKNOWN` instead. In this
-case, gogrep falls back to `unix.Stat` to determine the file type:
+case, agrep falls back to `unix.Stat` to determine the file type:
 
 ```go
 case DT_UNKNOWN:
@@ -401,7 +401,7 @@ the buffer per call, so a larger buffer means fewer round-trips to the kernel.
 
 ### Allocation Comparison
 
-| Operation | os.ReadDir (per directory of N files) | gogrep (per directory of N files) |
+| Operation | os.ReadDir (per directory of N files) | agrep (per directory of N files) |
 |---|---|---|
 | Directory handle | 1 `*os.File` + finalizer (heap) | 1 `int` fd (stack) |
 | Getdents buffer | Internal, reallocated | 1 per worker, reused forever |
@@ -410,7 +410,7 @@ the buffer per call, so a larger buffer means fewer round-trips to the kernel.
 | Type information | 0-N `Lstat` calls | 0 (from `d_type`, except DT_UNKNOWN) |
 
 The only unavoidable per-entry allocation is the filename string, since the
-raw bytes in the getdents buffer will be overwritten on the next call. gogrep
+raw bytes in the getdents buffer will be overwritten on the next call. agrep
 uses `string(nameBytes[:nameLen])` which copies the bytes into a new string
 allocation. This is the theoretical minimum for any approach that needs to
 pass filenames to other goroutines.
@@ -461,9 +461,9 @@ This means:
 - When searching `/usr/lib` or `/etc` (files owned by root), `O_NOATIME` fails
   with `EPERM` for every file.
 
-### gogrep's Atomic Fallback Caching
+### agrep's Atomic Fallback Caching
 
-gogrep implements a "try once, cache the result" strategy using `atomic.Int32`.
+agrep implements a "try once, cache the result" strategy using `atomic.Int32`.
 This pattern appears in two places because the input and walker packages are
 independent (they do not share state by design).
 
@@ -554,7 +554,7 @@ The `input` and `walker` packages each have their own `noatimeWorks` variable.
 This is intentional for two reasons:
 
 1. **Package independence**: The packages do not import each other and share no
-   state. This is a design principle of gogrep -- pure dependency injection,
+   state. This is a design principle of agrep -- pure dependency injection,
    no global mutable state crossing package boundaries.
 
 2. **Different file types**: The walker opens directories; the input package
@@ -580,9 +580,9 @@ discovers it and the time it tries to open it, the `Getdents` call would fail
 with a confusing error. With `O_DIRECTORY`, the failure happens at open time
 with a clear error.
 
-Note: gogrep currently uses `unix.Open` (which maps to the `open` syscall on
+Note: agrep currently uses `unix.Open` (which maps to the `open` syscall on
 amd64) rather than `unix.Openat` (which maps to `openat`). The `openat` syscall
-takes an additional `dirfd` parameter for relative path resolution. gogrep uses
+takes an additional `dirfd` parameter for relative path resolution. agrep uses
 absolute paths throughout (constructed by `joinPath`), so `openat` with
 `AT_FDCWD` would be functionally equivalent. However, `openat` is the foundation
 of the io_uring integration (see the [io_uring section](#io_uring--when-faster-syscalls-are-actually-slower)),
@@ -592,7 +592,7 @@ where `PrepOpenat` uses `AT_FDCWD` as the directory file descriptor.
 
 ## fstat -- Stat Without Path Resolution
 
-A recurring pattern in gogrep is: open a file, then immediately stat it using
+A recurring pattern in agrep is: open a file, then immediately stat it using
 the file descriptor rather than the path.
 
 **Source: `internal/input/mmap.go`, lines 47-65**
@@ -640,7 +640,7 @@ difference is in path resolution:
    operation, O(1)).
 3. It reads the inode metadata directly from the already-resolved `struct file`.
 
-Since gogrep has already opened the file (and thus already paid for path
+Since agrep has already opened the file (and thus already paid for path
 resolution), calling `fstat` avoids repeating that work. The saving is small
 per call (perhaps a few hundred nanoseconds), but across 37,000+ files it adds
 up.
@@ -666,7 +666,7 @@ type Stat_t struct {
     Gid     uint32
     _       int32
     Rdev    uint64
-    Size    int64    // <-- this is what gogrep reads
+    Size    int64    // <-- this is what agrep reads
     Blksize int64
     Blocks  int64
     Atim    Timespec
@@ -693,7 +693,7 @@ Returning an interface causes the concrete `fileStat` struct to escape to the
 heap. The `Sys()` method returns `any` (another interface), which further
 complicates escape analysis. The result: `os.File.Stat()` always allocates.
 
-gogrep only needs `stat.Size` (to know how many bytes to read) and `stat.Mode`
+agrep only needs `stat.Size` (to know how many bytes to read) and `stat.Mode`
 (in the walker's DT_UNKNOWN fallback path). Direct field access on a
 stack-allocated struct is zero-cost.
 
@@ -715,13 +715,13 @@ of bytes read. This means:
    SEEK_SET)` followed by `read(fd, buf, count)` -- that is two syscalls.
 2. The file descriptor's position is shared state. If multiple threads read
    from the same fd, their reads interfere with each other (this is not a
-   concern for gogrep since each worker opens its own fd, but it is a general
+   concern for agrep since each worker opens its own fd, but it is a general
    advantage of pread).
 
 `pread` combines seek and read into a single atomic syscall and does not modify
 the fd's position. This saves one syscall compared to `lseek + read`.
 
-### gogrep's pread Loop
+### agrep's pread Loop
 
 **Source: `internal/input/buffered.go`, lines 51-76**
 
@@ -868,7 +868,7 @@ Accessing byte at offset 50000:
     5. Subsequent accesses to the same 4KB page are instant (no fault)
 ```
 
-### gogrep's mmap Implementation
+### agrep's mmap Implementation
 
 **Source: `internal/input/mmap.go`, lines 20-45**
 
@@ -905,7 +905,7 @@ func readMmap(fd int, size int64, path string) (ReadResult, error) {
 ### mmap Flags Explained
 
 **`PROT_READ`**: The mapping is read-only. Any attempt to write to it would
-cause a `SIGSEGV`. This is all gogrep needs -- it searches file contents but
+cause a `SIGSEGV`. This is all agrep needs -- it searches file contents but
 never modifies them.
 
 **`MAP_PRIVATE`**: Changes to the mapping are not written back to the file. For
@@ -915,9 +915,9 @@ copy-on-write optimizations and does not need to track dirty pages for
 writeback. Some kernel code paths are simpler for private mappings.
 
 **Why NOT MAP_POPULATE**: `MAP_POPULATE` tells the kernel to pre-fault all pages
-at `mmap` time, loading the entire file into memory before returning. gogrep
+at `mmap` time, loading the entire file into memory before returning. agrep
 deliberately omits this flag. The reason is the `-l` (files-only) mode: when
-gogrep only needs to check whether a file contains *any* match, it calls
+agrep only needs to check whether a file contains *any* match, it calls
 `MatchExists`, which may find a match in the first few kilobytes. With
 `MAP_POPULATE`, the kernel would load the entire file (potentially megabytes)
 before the search even starts. Without it, pages fault in on demand, and if the
@@ -925,7 +925,7 @@ match is found early, the remaining pages are never loaded.
 
 ### The Adaptive Reader
 
-gogrep does not always use mmap. The `adaptiveReader` chooses between buffered
+agrep does not always use mmap. The `adaptiveReader` chooses between buffered
 pread and mmap based on file size:
 
 **Source: `internal/input/mmap.go`, lines 67-103**
@@ -1034,7 +1034,7 @@ from beginning to end." The kernel responds by:
 For a grep workload that scans every byte of every file from start to finish,
 this is the ideal access pattern hint.
 
-Other `fadvise` values (not used by gogrep but worth knowing):
+Other `fadvise` values (not used by agrep but worth knowing):
 
 - `FADV_RANDOM`: Disable readahead entirely (for database-style random access).
 - `FADV_WILLNEED`: Start loading specified range into page cache now (async
@@ -1113,7 +1113,7 @@ struct iovec {
 };
 ```
 
-### gogrep's writev Writer
+### agrep's writev Writer
 
 **Source: `internal/output/writer.go`**
 
@@ -1184,7 +1184,7 @@ Why does `writev` (or `write`) not always write all requested bytes? Several
 scenarios:
 
 - **Pipe buffer full**: If stdout is piped to another program (e.g.,
-  `gogrep pattern | head -20`), the pipe has a finite buffer (typically 64KB
+  `agrep pattern | head -20`), the pipe has a finite buffer (typically 64KB
   on Linux, configurable via `F_SETPIPE_SZ`). When the pipe buffer fills, the
   write blocks until the reader consumes some data. If a signal interrupts the
   blocked write, it returns with a short write.
@@ -1247,18 +1247,18 @@ and grows as needed, with no per-file allocation.
 
 ## inotify + epoll -- Raw File Watching
 
-gogrep's `--watch` mode monitors files for changes and searches new content in
+agrep's `--watch` mode monitors files for changes and searches new content in
 real time. It uses two Linux-specific subsystems: **inotify** for filesystem
 event notification and **epoll** for efficient I/O multiplexing.
 
 ### Why Not fsnotify?
 
 The Go ecosystem has the `fsnotify` package, which provides cross-platform file
-watching. gogrep avoids it for the same reasons it avoids the `os` package:
+watching. agrep avoids it for the same reasons it avoids the `os` package:
 
 - `fsnotify` allocates an `Event` struct per notification (heap).
 - It runs background goroutines with channels.
-- It normalizes events across platforms, adding overhead for features gogrep
+- It normalizes events across platforms, adding overhead for features agrep
   does not need (Windows `ReadDirectoryChangesW`, macOS `kqueue`).
 - It does not expose the raw inotify event buffer for zero-copy parsing.
 
@@ -1313,7 +1313,7 @@ func New() (*Watcher, error) {
 ### inotify_init1 Flags
 
 **`IN_CLOEXEC`**: Sets the close-on-exec flag on the inotify file descriptor.
-If gogrep ever spawns a child process via `exec`, this fd is automatically
+If agrep ever spawns a child process via `exec`, this fd is automatically
 closed. Without it, the child would inherit the fd, and the inotify watches
 would remain active in the child process, potentially causing resource leaks
 and unexpected behavior.
@@ -1356,7 +1356,7 @@ func (w *Watcher) Add(path string) error {
 
 The event mask specifies which filesystem events to subscribe to:
 
-| Flag | Meaning | Use Case in gogrep |
+| Flag | Meaning | Use Case in agrep |
 |---|---|---|
 | `IN_MODIFY` | File content was modified | Trigger re-search on changed files |
 | `IN_CREATE` | File was created in watched dir | Auto-watch newly created files |
@@ -1375,7 +1375,7 @@ epoll is Linux's scalable I/O event notification mechanism. It replaces the
 older `select(2)` and `poll(2)` syscalls, which have O(n) performance in the
 number of monitored file descriptors.
 
-In gogrep's case, epoll monitors exactly one fd (the inotify fd). This might
+In agrep's case, epoll monitors exactly one fd (the inotify fd). This might
 seem like overkill -- why not just call `read` on the inotify fd directly?
 The reason is the shutdown mechanism: the event loop must check `w.done`
 between reads. Without epoll, a blocking `read` would hang forever if no
@@ -1461,7 +1461,7 @@ struct inotify_event {
 ```
 
 The `cookie` field is used to correlate `IN_MOVED_FROM` and `IN_MOVED_TO`
-events (they share the same cookie value). gogrep does not use it because it
+events (they share the same cookie value). agrep does not use it because it
 does not watch for `IN_MOVED_FROM`.
 
 **Source: `internal/watch/watch.go`, lines 141-194**
@@ -1539,7 +1539,7 @@ alignment by reading individual bytes.
 
 ## io_uring -- When "Faster" Syscalls Are Actually Slower
 
-gogrep includes a complete pure-Go io_uring wrapper at
+agrep includes a complete pure-Go io_uring wrapper at
 `internal/uring/` (since removed from the tree — see git history; findings preserved below). It was built, benchmarked extensively,
 and found to be **1.3x to 3.6x slower** than direct syscalls for grep
 workloads. This section explains what io_uring is, how the wrapper works, and
@@ -1729,7 +1729,7 @@ func (r *Ring) SubmitAndWait(count uint32, fn func(cqe *CQE)) error {
 **The SQ indirection array**: There is a level of indirection between the SQ
 ring and the SQE array. The SQ ring contains uint32 indices into the SQE
 array, not the SQEs themselves. This allows the user to prepare SQEs in any
-order and submit them in a different order. gogrep fills SQEs 0..count-1 and
+order and submit them in a different order. agrep fills SQEs 0..count-1 and
 maps them directly: `SQ[i] = i`.
 
 **`atomic.StoreUint32(r.sqTail, tail+count)`**: This is the critical release
@@ -1842,7 +1842,7 @@ This added complexity without adding performance.
 
 ### When io_uring WOULD Help
 
-io_uring is not universally slower. It excels in scenarios gogrep does not
+io_uring is not universally slower. It excels in scenarios agrep does not
 encounter:
 
 - **Network filesystems (NFS, FUSE)**: Per-operation latency is milliseconds
@@ -1856,7 +1856,7 @@ encounter:
 - **Fixed files and registered buffers**: Pre-registering file descriptors and
   buffers eliminates per-operation setup in the kernel.
 
-gogrep's workload -- warm page cache, local filesystem, many small files -- is
+agrep's workload -- warm page cache, local filesystem, many small files -- is
 the worst case for io_uring and the best case for direct syscalls with a well-
 parallelized goroutine pool.
 
@@ -1874,7 +1874,7 @@ architecture.**
 ## Syscall Overhead Accounting
 
 Understanding where time goes requires counting and measuring every syscall.
-Here is the per-file syscall breakdown for a typical gogrep recursive search:
+Here is the per-file syscall breakdown for a typical agrep recursive search:
 
 ### Per-File Syscalls (Buffered Read Path)
 
@@ -1939,14 +1939,14 @@ To analyze syscall overhead on a real run:
 
 ```bash
 # Count syscalls by type
-strace -c -f gogrep -r --no-ignore --hidden -l "pattern" /path/to/tree 2>&1 | tail -20
+strace -c -f agrep -r --no-ignore --hidden -l "pattern" /path/to/tree 2>&1 | tail -20
 
 # Trace specific syscalls with timing
 strace -f -e trace=open,openat,close,fstat,pread64,getdents64 \
-    -T gogrep -r -l "pattern" /path/to/tree 2>trace.log
+    -T agrep -r -l "pattern" /path/to/tree 2>trace.log
 
 # Count O_NOATIME failures
-strace -f -e trace=open,openat gogrep -r -l "pattern" /usr/lib 2>&1 | grep EPERM | wc -l
+strace -f -e trace=open,openat agrep -r -l "pattern" /usr/lib 2>&1 | grep EPERM | wc -l
 ```
 
 The `-f` flag is essential: it traces all threads (Go goroutines run on

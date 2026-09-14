@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/dl/gogrep/internal/walker"
+	"github.com/DanielLaubacher/agrep/internal/walker"
 )
 
 // Index is a loaded, queryable index. The posting file is mmap'd and

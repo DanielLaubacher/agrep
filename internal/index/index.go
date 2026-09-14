@@ -1,8 +1,8 @@
-// Package index implements gogrep's daemonless trigram index: a
+// Package index implements agrep's daemonless trigram index: a
 // prefilter that shrinks the set of files the real matchers verify,
 // never an answerer (see indexing-daemon.md).
 //
-// State lives under $XDG_CACHE_HOME/gogrep/<root-id>/ and is maintained
+// State lives under $XDG_CACHE_HOME/agrep/<root-id>/ and is maintained
 // entirely by `--use-index` queries: the first builds the index, every
 // later one validates freshness with a parallel stat sweep. Files that
 // changed since the build are appended to the candidate set — the index
@@ -82,14 +82,14 @@ type FileEntry struct {
 	Binary  bool
 }
 
-// cacheBase returns $XDG_CACHE_HOME/gogrep (or ~/.cache/gogrep).
+// cacheBase returns $XDG_CACHE_HOME/agrep (or ~/.cache/agrep).
 func cacheBase() string {
 	base := os.Getenv("XDG_CACHE_HOME")
 	if base == "" {
 		home, _ := os.UserHomeDir()
 		base = filepath.Join(home, ".cache")
 	}
-	return filepath.Join(base, "gogrep")
+	return filepath.Join(base, "agrep")
 }
 
 // Dir returns the cache directory for a root path.

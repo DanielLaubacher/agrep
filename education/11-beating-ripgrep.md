@@ -1,7 +1,7 @@
 # Beating ripgrep: Startup, Streaming, Parallel Chunks, and Rare-Pair Teddy
 
-Doc 10 ended with gogrep at 1.0-1.4x of ripgrep on most patterns. This
-document records the next two optimization rounds, which ended with gogrep
+Doc 10 ended with agrep at 1.0-1.4x of ripgrep on most patterns. This
+document records the next two optimization rounds, which ended with agrep
 **winning or tying every benchmarked workload** — 7 of 8 single-file cases
 outright (up to 10.9x), all recursive cases, and one statistical tie. It
 also records a crash bug the benchmarks exposed, several wrong theories the
@@ -36,7 +36,7 @@ hyperfine + `perf stat -r`, both tools running equivalent config
 
 Doc 10's tables were stale. A fresh baseline against ripgrep 15.1.0 showed:
 
-| Workload (29MB file) | gogrep | rg | Gap |
+| Workload (29MB file) | agrep | rg | Gap |
 |---|---|---|---|
 | `ERROR.*port [0-9]+` `-c` | 15.2ms | 7.2ms | 2.1x |
 | email regex `-c` | 13.7ms | 5.4ms | 2.5x |
@@ -49,7 +49,7 @@ lesson: **benchmark before believing your own docs.**
 
 ## 2. The Crash: Lazy DFAs and Shared Matchers
 
-`gogrep -l 'err(or|no|code)' /usr/include` panicked intermittently with
+`agrep -l 'err(or|no|code)' /usr/include` panicked intermittently with
 `index out of range` inside `computeTransition`. The lazy DFA computes
 transitions on first access, mutating `trans`, `stateMap`, `nfaSets`, and
 `isMatch` — while one `Regexp` is shared across `NumCPU*2` scheduler
@@ -69,11 +69,11 @@ single load + compare per byte.
 
 ## 3. The 5ms Startup Tax
 
-gogrep took 6.4ms to grep a 6-byte file; rg took 1.9ms. `GODEBUG=inittrace`
+agrep took 6.4ms to grep a 6-byte file; rg took 1.9ms. `GODEBUG=inittrace`
 showed package inits starting at 5.3ms — and a perf profile pinned it:
 `modernc.org/libc`'s `netdb` package init **parses /etc/services (300KB on
 Arch) with strings.Fields at every process start.** That package arrives
-transitively: `go.elara.ws/pcre` → `modernc.org/libc` → netdb. Every gogrep
+transitively: `go.elara.ws/pcre` → `modernc.org/libc` → netdb. Every agrep
 invocation paid ~5ms for a services database it never used, because package
 init runs whether or not `-P` is ever passed.
 
@@ -187,8 +187,8 @@ multi-pass costs are invisible.
 
 ## 8. Parallel Single-File Chunking
 
-Everything above gets gogrep *to* parity on single-file search. To go
-past it: ripgrep searches one file with one thread; gogrep has 11 idle
+Everything above gets agrep *to* parity on single-file search. To go
+past it: ripgrep searches one file with one thread; agrep has 11 idle
 cores.
 
 `internal/cli/parallel.go` splits buffers ≥ 4MB into line-aligned chunks
@@ -253,7 +253,7 @@ Measured against the Aho-Corasick trie it replaces (4MB corpus):
 | `{cat, dog, elephant}` | 7.4 GB/s | — | |
 | `{define, include, ifndef, pragma}` | 7.8 GB/s | — | |
 
-End-to-end, `-F -e error -e errno -e errcode` on 29MB: gogrep 3.7ms vs rg
+End-to-end, `-F -e error -e errno -e errcode` on 29MB: agrep 3.7ms vs rg
 (actual Teddy) 13.4ms in count mode.
 
 Equivalence with Aho-Corasick (all matches, including overlapping ones) is
@@ -311,24 +311,24 @@ inverts the OR, which is correct (verified against GNU grep).
 
 Single file, 29MB, 500K lines (hyperfine, 12 runs):
 
-| Workload | gogrep | rg | Verdict |
+| Workload | agrep | rg | Verdict |
 |---|---|---|---|
 | `ERROR.*port [0-9]+` full output | 6.9ms | 6.5ms | tie |
-| `ERROR.*port [0-9]+` `-c` | 3.8ms | 7.4ms | **gogrep 1.95x** |
-| `[a-zA-Z]+@[a-zA-Z]+\.[a-zA-Z]+` output | 5.2ms | 7.1ms | **gogrep 1.37x** |
-| `\d{4}-\d{2}-\d{2}` `-c` | 4.3ms | 19.5ms | **gogrep 4.5x** |
-| `[A-Z]{2,}` `-c` | 4.9ms | 53.4ms | **gogrep 10.9x** |
-| `-F -e error -e errno -e errcode` | 6.8ms | 11.6ms | **gogrep 1.7x** |
-| fixed string `-n` | 8.5ms | 20.2ms | **gogrep 2.4x** |
-| no-match | 3.0ms | 8.2ms | **gogrep 2.7x** |
+| `ERROR.*port [0-9]+` `-c` | 3.8ms | 7.4ms | **agrep 1.95x** |
+| `[a-zA-Z]+@[a-zA-Z]+\.[a-zA-Z]+` output | 5.2ms | 7.1ms | **agrep 1.37x** |
+| `\d{4}-\d{2}-\d{2}` `-c` | 4.3ms | 19.5ms | **agrep 4.5x** |
+| `[A-Z]{2,}` `-c` | 4.9ms | 53.4ms | **agrep 10.9x** |
+| `-F -e error -e errno -e errcode` | 6.8ms | 11.6ms | **agrep 1.7x** |
+| fixed string `-n` | 8.5ms | 20.2ms | **agrep 2.4x** |
+| no-match | 3.0ms | 8.2ms | **agrep 2.7x** |
 
 Recursive, /usr/include:
 
-| Workload | gogrep | rg | Verdict |
+| Workload | agrep | rg | Verdict |
 |---|---|---|---|
-| `define` `-l` | 112ms | 184ms | **gogrep 1.65x** |
+| `define` `-l` | 112ms | 184ms | **agrep 1.65x** |
 | `define` `-n` (101MB output) | 273ms | 267ms | tie |
-| `err(or\|no\|code)` `-l` | 140ms | 153ms | **gogrep 1.10x** |
+| `err(or\|no\|code)` `-l` | 140ms | 153ms | **agrep 1.10x** |
 
 Where the wins come from, by mechanism: startup (every short run), parallel
 chunks (every big-file mode), Teddy (multi-pattern), streaming pipeline

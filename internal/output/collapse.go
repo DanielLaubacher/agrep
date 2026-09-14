@@ -82,7 +82,7 @@ func (f *CollapseFormatter) Finish(buf []byte) []byte {
 			buf = strconv.AppendInt(buf, int64(f.collapsedTexts), 10)
 			buf = append(buf, "}\n"...)
 		} else {
-			buf = append(buf, "[gogrep] collapsed "...)
+			buf = append(buf, "[agrep] collapsed "...)
 			buf = strconv.AppendInt(buf, int64(f.collapsedLines), 10)
 			buf = append(buf, " repeats of "...)
 			buf = strconv.AppendInt(buf, int64(f.collapsedTexts), 10)

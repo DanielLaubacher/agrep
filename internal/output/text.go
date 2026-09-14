@@ -3,7 +3,7 @@ package output
 import (
 	"strconv"
 
-	"github.com/dl/gogrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
 )
 
 // separatorLine is the shared "--" separator text for context groups.

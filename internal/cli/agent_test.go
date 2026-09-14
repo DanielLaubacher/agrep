@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/dl/gogrep/internal/matcher"
-	"github.com/dl/gogrep/internal/output"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/output"
 )
 
 func TestSuggestVariants(t *testing.T) {

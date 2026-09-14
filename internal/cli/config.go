@@ -20,7 +20,7 @@ type StageConfig struct {
 	OnlyMatch bool // -o: output only matched portion
 }
 
-// Config holds all configuration for a gogrep search.
+// Config holds all configuration for a agrep search.
 type Config struct {
 	// Pipelines holds one or more match pipelines, OR'd together.
 	// Each pipeline is a chain of stages; -t chains stages, bare -e starts a new pipeline.

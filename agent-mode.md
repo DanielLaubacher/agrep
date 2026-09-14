@@ -1,6 +1,6 @@
-# Agent-First gogrep: Plan
+# Agent-First agrep: Plan
 
-gogrep's next consumer is not a human at a terminal but an AI agent using
+agrep's next consumer is not a human at a terminal but an AI agent using
 search as a sensing API inside a loop. Agents differ from humans in three
 ways that drive every feature below: their context window is a scarce
 budget, they iterate queries rather than page through results, and they
@@ -115,7 +115,7 @@ multiline citations verify like any other. Unsupported combos (`-P`,
 
 See **indexing-daemon.md** for the full design of this phase.
 
-- **Trigram index daemon** (`gogrep serve`) with inotify change journal:
+- **Trigram index daemon** (`agrep serve`) with inotify change journal:
   millisecond repeated queries, `--changed-since`, sessions/cursors, and
   a vocabulary that makes `--suggest` free instead of a rescan.
 - **Near-duplicate collapsing**: valuable for vendored/generated code,

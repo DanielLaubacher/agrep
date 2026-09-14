@@ -17,7 +17,7 @@ import (
 	"regexp/syntax"
 	"strings"
 
-	"github.com/dl/gogrep/internal/simd"
+	"github.com/DanielLaubacher/agrep/internal/simd"
 )
 
 // Regexp is a compiled regular expression.

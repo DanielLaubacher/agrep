@@ -1,11 +1,11 @@
-# gogrep — Agent Instructions
+# agrep — Agent Instructions
 
 ## Quick Reference
 
 - **Language**: Go 1.26+, Linux-only, AMD64
-- **Module**: `github.com/dl/gogrep`
-- **Build**: `GOEXPERIMENT=simd go build -o bin/gogrep ./cmd/gogrep` (or `make build`)
-- **Test**: `GOEXPERIMENT=simd GOGREP_SKIP_PCRE=1 go test -race ./...` (or `make test`)
+- **Module**: `github.com/DanielLaubacher/agrep`
+- **Build**: `GOEXPERIMENT=simd go build -o bin/agrep ./cmd/agrep` (or `make build`)
+- **Test**: `GOEXPERIMENT=simd AGREP_SKIP_PCRE=1 go test -race ./...` (or `make test`)
 - **Go deps**: `golang.org/x/sys`, `go.elara.ws/pcre`, `github.com/sabhiram/go-gitignore`, `simd/archsimd` (stdlib experimental)
 
 ## Critical Rules
@@ -37,7 +37,7 @@
 
 ## Testing
 
-- Run `GOEXPERIMENT=simd GOGREP_SKIP_PCRE=1 go test -race ./...` after every change
+- Run `GOEXPERIMENT=simd AGREP_SKIP_PCRE=1 go test -race ./...` after every change
 - Run `GOEXPERIMENT=simd go test ./internal/matcher/ -run "PCRE"` separately (PCRE incompatible with -race)
 - Use `testdata/` fixtures for integration tests
 - Table-driven tests for matchers

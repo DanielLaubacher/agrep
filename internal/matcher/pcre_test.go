@@ -14,7 +14,7 @@ import (
 // upstream issue, not a real race condition.
 func skipIfRace(t *testing.T) {
 	t.Helper()
-	if os.Getenv("GOGREP_SKIP_PCRE") == "1" {
+	if os.Getenv("AGREP_SKIP_PCRE") == "1" {
 		t.Skip("skipping PCRE test: checkptr incompatible with modernc.org/libc")
 	}
 }

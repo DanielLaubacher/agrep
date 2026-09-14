@@ -8,7 +8,7 @@ import (
 )
 
 func TestBenchFindAllIndex(t *testing.T) {
-	data, err := os.ReadFile("/tmp/gogrep_bench_data.txt")
+	data, err := os.ReadFile("/tmp/agrep_bench_data.txt")
 	if err != nil {
 		t.Skip("bench data not available")
 	}

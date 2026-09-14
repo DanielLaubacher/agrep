@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/dl/gogrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
 )
 
 // parallelTestData builds a >parallelThreshold buffer with matches scattered

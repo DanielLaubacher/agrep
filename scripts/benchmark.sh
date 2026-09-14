@@ -1,5 +1,5 @@
 #!/bin/bash
-# benchmark.sh — Compare gogrep vs GNU grep vs ripgrep
+# benchmark.sh — Compare agrep vs GNU grep vs ripgrep
 # Usage: ./scripts/benchmark.sh [SEARCH_DIR]
 #
 # Generates a large test file if none exists, then runs comparative benchmarks.
@@ -7,17 +7,17 @@
 
 set -euo pipefail
 
-GOGREP="./bin/gogrep"
+AGREP="./bin/agrep"
 GREP="/usr/bin/grep"
 RG="/usr/bin/rg"
 
 SEARCH_DIR="${1:-/usr/include}"
-TESTFILE="/tmp/gogrep_bench_data.txt"
+TESTFILE="/tmp/agrep_bench_data.txt"
 
-# Build gogrep if needed
-if [ ! -f "$GOGREP" ]; then
-    echo "Building gogrep..."
-    go build -o "$GOGREP" ./cmd/gogrep
+# Build agrep if needed
+if [ ! -f "$AGREP" ]; then
+    echo "Building agrep..."
+    go build -o "$AGREP" ./cmd/agrep
 fi
 
 # Generate test data if needed
@@ -34,8 +34,8 @@ if [ ! -f "$TESTFILE" ]; then
 fi
 
 echo ""
-echo "=== gogrep Benchmark Suite ==="
-echo "gogrep: $GOGREP"
+echo "=== agrep Benchmark Suite ==="
+echo "agrep: $AGREP"
 echo "grep:   $GREP ($(grep --version 2>&1 | head -1))"
 echo "rg:     $RG ($(rg --version | head -1))"
 echo "Test file: $TESTFILE ($(wc -l < "$TESTFILE") lines, $(du -h "$TESTFILE" | cut -f1))"
@@ -79,50 +79,50 @@ run_bench() {
 
 # Benchmark 1: Simple fixed string search in large file
 run_bench "Fixed string search (large file)" \
-    "$GOGREP -F 'connection refused' $TESTFILE" \
+    "$AGREP -F 'connection refused' $TESTFILE" \
     "$GREP -F 'connection refused' $TESTFILE" \
     "$RG -F 'connection refused' $TESTFILE"
 
 # Benchmark 2: Regex search in large file
 run_bench "Regex search (large file)" \
-    "$GOGREP 'ERROR.*port [0-9]+' $TESTFILE" \
+    "$AGREP 'ERROR.*port [0-9]+' $TESTFILE" \
     "$GREP -E 'ERROR.*port [0-9]+' $TESTFILE" \
     "$RG 'ERROR.*port [0-9]+' $TESTFILE"
 
 # Benchmark 3: Case-insensitive search
 run_bench "Case-insensitive search (large file)" \
-    "$GOGREP -i 'lorem ipsum' $TESTFILE" \
+    "$AGREP -i 'lorem ipsum' $TESTFILE" \
     "$GREP -i 'lorem ipsum' $TESTFILE" \
     "$RG -i 'lorem ipsum' $TESTFILE"
 
 # Benchmark 4: No-match search (worst case for many tools)
 run_bench "No-match search (large file)" \
-    "$GOGREP 'ZZZZNOTFOUND' $TESTFILE" \
+    "$AGREP 'ZZZZNOTFOUND' $TESTFILE" \
     "$GREP 'ZZZZNOTFOUND' $TESTFILE" \
     "$RG 'ZZZZNOTFOUND' $TESTFILE"
 
 # Benchmark 5: Count only
 run_bench "Count matches (large file)" \
-    "$GOGREP -c 'fox' $TESTFILE" \
+    "$AGREP -c 'fox' $TESTFILE" \
     "$GREP -c 'fox' $TESTFILE" \
     "$RG -c 'fox' $TESTFILE"
 
 # Benchmark 6: Recursive search (directory tree)
 if [ -d "$SEARCH_DIR" ]; then
     run_bench "Recursive search (directory tree: $SEARCH_DIR)" \
-        "$GOGREP -r 'include' $SEARCH_DIR" \
+        "$AGREP -r 'include' $SEARCH_DIR" \
         "$GREP -r 'include' $SEARCH_DIR" \
         "$RG 'include' $SEARCH_DIR"
 
     run_bench "Recursive + line numbers (directory tree)" \
-        "$GOGREP -rn 'define' $SEARCH_DIR" \
+        "$AGREP -rn 'define' $SEARCH_DIR" \
         "$GREP -rn 'define' $SEARCH_DIR" \
         "$RG -n 'define' $SEARCH_DIR"
 fi
 
 # Benchmark 7: Multiple patterns
 run_bench "Multiple patterns (large file)" \
-    "$GOGREP -F -e 'ERROR' -e 'INFO' -e 'function' $TESTFILE" \
+    "$AGREP -F -e 'ERROR' -e 'INFO' -e 'function' $TESTFILE" \
     "$GREP -F -e 'ERROR' -e 'INFO' -e 'function' $TESTFILE" \
     "$RG -F -e 'ERROR' -e 'INFO' -e 'function' $TESTFILE"
 

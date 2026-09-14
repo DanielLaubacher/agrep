@@ -13,7 +13,7 @@ import (
 // variants are not worth reimplementing). ebook-convert requires an output
 // file, so a temp file bridges to the in-memory pipeline.
 func convertMOBI(src string) ([]byte, int, string, string, error) {
-	tmp, err := os.CreateTemp("", "gogrep-extract-*.txt")
+	tmp, err := os.CreateTemp("", "agrep-extract-*.txt")
 	if err != nil {
 		return nil, 0, "ebook-convert", "", err
 	}

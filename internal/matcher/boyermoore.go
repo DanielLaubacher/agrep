@@ -3,7 +3,7 @@ package matcher
 import (
 	"bytes"
 
-	"github.com/dl/gogrep/internal/simd"
+	"github.com/DanielLaubacher/agrep/internal/simd"
 )
 
 // BoyerMooreMatcher uses SIMD-accelerated fixed string matching for single patterns.

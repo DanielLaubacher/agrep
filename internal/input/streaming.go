@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"io"
 
-	"github.com/dl/gogrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
 )
 
 // StreamingReader processes an io.Reader line-by-line for streaming search.

@@ -11,10 +11,10 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/dl/gogrep/internal/input"
-	"github.com/dl/gogrep/internal/matcher"
-	"github.com/dl/gogrep/internal/output"
-	"github.com/dl/gogrep/internal/scheduler"
+	"github.com/DanielLaubacher/agrep/internal/input"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/output"
+	"github.com/DanielLaubacher/agrep/internal/scheduler"
 )
 
 // ---------------- --get-region ----------------
@@ -550,11 +550,11 @@ func appendSuggestReport(buf []byte, patterns []string, probes []suggestProbe, j
 	quoted := "'" + strings.Join(patterns, "', '") + "'"
 	switch {
 	case len(probes) == 0:
-		buf = append(buf, "[gogrep] no matches for "...)
+		buf = append(buf, "[agrep] no matches for "...)
 		buf = append(buf, quoted...)
 		buf = append(buf, "; no derivable variants to probe\n"...)
 	case found == 0:
-		buf = append(buf, "[gogrep] no matches for "...)
+		buf = append(buf, "[agrep] no matches for "...)
 		buf = append(buf, quoted...)
 		buf = append(buf, "; none of the derived variants occur (tried: "...)
 		for i, p := range probes {
@@ -565,7 +565,7 @@ func appendSuggestReport(buf []byte, patterns []string, probes []suggestProbe, j
 		}
 		buf = append(buf, ")\n"...)
 	default:
-		buf = append(buf, "[gogrep] no matches for "...)
+		buf = append(buf, "[agrep] no matches for "...)
 		buf = append(buf, quoted...)
 		buf = append(buf, "; variants that do occur (rarest first):\n"...)
 		for _, p := range probes {

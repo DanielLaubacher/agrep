@@ -2,7 +2,7 @@
 
 ## Summary
 
-While building gogrep's lazy DFA regex engine, we initially observed that adding position recording to the DFA's inner loop appeared to double execution time (17ms bare → 34ms with recording). We attributed this to register pressure and Go codegen limitations.
+While building agrep's lazy DFA regex engine, we initially observed that adding position recording to the DFA's inner loop appeared to double execution time (17ms bare → 34ms with recording). We attributed this to register pressure and Go codegen limitations.
 
 **This was wrong.** The 17ms "bare" measurement was a cold-cache artifact — the loop was silently skipping uncomputed DFA transitions via a `continue` statement, making it trivially fast but incorrect. With a properly warmed cache, recording overhead is **2% (1.02x)**, not 100% (2.0x).
 
@@ -138,7 +138,7 @@ The forward DFA's `if next < 0 { continue }` produced a valid-looking result (a 
 
 ## The Go vs Rust Per-Transition Gap
 
-Both gogrep and ripgrep use the same algorithm (SIMD first-byte scan + lazy DFA verify) and execute the same number of DFA transitions (~4M for `\d{4}-\d{2}-\d{2}` on 29MB). The 2.4x gap is **per-transition cost**: 13ns (Go) vs ~7ns (Rust).
+Both agrep and ripgrep use the same algorithm (SIMD first-byte scan + lazy DFA verify) and execute the same number of DFA transitions (~4M for `\d{4}-\d{2}-\d{2}` on 29MB). The 2.4x gap is **per-transition cost**: 13ns (Go) vs ~7ns (Rust).
 
 ### Go's DFA transition: 7 instructions, 3 branches
 
@@ -192,11 +192,11 @@ The 2.3x instruction ratio maps closely to the 2.0-2.4x measured time ratio. The
 
 Options 1-2 are achievable in pure Go (option 1 requires `unsafe`). Option 3 is the nuclear option but would bring the DFA inner loop to parity with Rust.
 
-None of these are currently implemented in gogrep. The current approach — SIMD prefiltering to minimize the number of DFA transitions + the optimizations already in place — makes gogrep competitive with ripgrep on most real-world patterns without resorting to unsafe code.
+None of these are currently implemented in agrep. The current approach — SIMD prefiltering to minimize the number of DFA transitions + the optimizations already in place — makes agrep competitive with ripgrep on most real-world patterns without resorting to unsafe code.
 
-## Final Performance: gogrep vs ripgrep
+## Final Performance: agrep vs ripgrep
 
-| Pattern | gogrep | rg | Gap | Why |
+| Pattern | agrep | rg | Gap | Why |
 |---------|--------|------|-----|-----|
 | `[A-Z]{2,}` | 68ms | 68ms | **tied** | SIMD range scan dominates |
 | `[a-zA-Z]+@...\.[a-zA-Z]+` | 8ms | 7ms | **1.1x** | Rare-byte `@` prefilter |

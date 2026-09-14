@@ -1,7 +1,7 @@
 package cli
 
 // Parallel single-buffer search. ripgrep searches one file with one thread;
-// gogrep splits large buffers into line-aligned chunks and searches them
+// agrep splits large buffers into line-aligned chunks and searches them
 // concurrently, then rebases and merges the per-chunk results. Valid only
 // when the matcher guarantees matches never span a newline (LineBounded),
 // which also implies chunk results are position-rebasable.
@@ -12,7 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/dl/gogrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
 )
 
 const (

@@ -1,4 +1,4 @@
-// Gogrep is a high-performance, Linux-only grep alternative.
+// Agrep is a high-performance, Linux-only grep alternative.
 //
 // It searches files and directories for patterns using SIMD-accelerated
 // fixed-string search, a custom lazy-DFA regex engine, and raw Linux
@@ -18,7 +18,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/dl/gogrep/internal/cli"
+	"github.com/DanielLaubacher/agrep/internal/cli"
 )
 
 func main() {

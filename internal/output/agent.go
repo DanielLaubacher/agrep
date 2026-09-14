@@ -130,7 +130,7 @@ func (f *BudgetFormatter) Finish(buf []byte) []byte {
 	if f.omittedLines == 0 && f.omittedFiles == 0 {
 		return buf
 	}
-	buf = append(buf, "[gogrep] output budget reached: showing "...)
+	buf = append(buf, "[agrep] output budget reached: showing "...)
 	buf = strconv.AppendInt(buf, int64(f.shownLines), 10)
 	buf = append(buf, " matching lines in "...)
 	buf = strconv.AppendInt(buf, int64(f.shownFiles), 10)

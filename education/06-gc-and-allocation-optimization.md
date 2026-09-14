@@ -1,6 +1,6 @@
 # GC Pressure, Escape Analysis, and Zero-Allocation Patterns
 
-This document covers garbage collector internals, escape analysis mechanics, and every allocation-elimination technique used in gogrep. Understanding these concepts is essential for writing high-throughput Go programs where the GC can become the dominant bottleneck.
+This document covers garbage collector internals, escape analysis mechanics, and every allocation-elimination technique used in agrep. Understanding these concepts is essential for writing high-throughput Go programs where the GC can become the dominant bottleneck.
 
 ---
 
@@ -85,7 +85,7 @@ GC CPU overhead ~= (live pointer count * cycles per second * cost per pointer sc
 
 Reducing any of these three multiplicands reduces GC overhead.
 
-### Why This Matters for gogrep
+### Why This Matters for agrep
 
 When searching 100,000 files:
 - The hot path allocates and frees a read buffer per file (via `sync.Pool`, see below).
@@ -101,7 +101,7 @@ If each `Match` contained pointer fields, the live pointer count during peak thr
 
 **File**: `internal/matcher/match.go`
 
-This is the single most impactful allocation optimization in gogrep. The `Match` struct represents one matched (or context) line, and the design ensures it contains **zero pointer fields**:
+This is the single most impactful allocation optimization in agrep. The `Match` struct represents one matched (or context) line, and the design ensures it contains **zero pointer fields**:
 
 ```go
 // Match is a pointer-free struct — no GC scanning per match
@@ -321,7 +321,7 @@ The compiler is conservative: if it cannot prove non-escape, the variable goes t
 
 **File**: `internal/simd/index.go`
 
-This is a specific, subtle escape analysis pitfall that was discovered and fixed in gogrep. It demonstrates how a seemingly harmless coding pattern can cause a heap allocation on every call, even on the path that returns `nil`.
+This is a specific, subtle escape analysis pitfall that was discovered and fixed in agrep. It demonstrates how a seemingly harmless coding pattern can cause a heap allocation on every call, even on the path that returns `nil`.
 
 ### The Trap
 
@@ -439,7 +439,7 @@ Choosing a larger stack buffer (e.g., `[64]int` = 512 bytes) would save one allo
 
 **File**: `internal/input/buffered.go`
 
-`sync.Pool` is Go's mechanism for reusing temporary objects across goroutines without explicit lifecycle management. gogrep uses it to recycle file read buffers.
+`sync.Pool` is Go's mechanism for reusing temporary objects across goroutines without explicit lifecycle management. agrep uses it to recycle file read buffers.
 
 ### The Pool Declaration
 
@@ -529,7 +529,7 @@ func readBuffered(fd int, size int64) (ReadResult, error) {
 
 ### sync.Pool Internals
 
-Understanding how `sync.Pool` works helps explain why it's effective for gogrep:
+Understanding how `sync.Pool` works helps explain why it's effective for agrep:
 
 1. **Per-P private slot**: Each P (logical processor in Go's scheduler) has a private slot in the pool. `Get()` first checks this slot -- if non-empty, it returns the item with zero contention.
 
@@ -537,7 +537,7 @@ Understanding how `sync.Pool` works helps explain why it's effective for gogrep:
 
 3. **GC clears the pool**: At the beginning of each GC cycle, the runtime moves all pooled items to a "victim" cache. At the next GC cycle, the victim cache is discarded. This means pooled items survive at most 2 GC cycles without being reused. This prevents the pool from growing unboundedly and leaking memory.
 
-4. **No size limit**: The pool itself has no cap. If you `Put` 1000 buffers, they'll all be there until the next GC. In practice, gogrep has `NumCPU * 2` workers, so at most that many buffers are checked out at once, and buffers are returned quickly after each file.
+4. **No size limit**: The pool itself has no cap. If you `Put` 1000 buffers, they'll all be there until the next GC. In practice, agrep has `NumCPU * 2` workers, so at most that many buffers are checked out at once, and buffers are returned quickly after each file.
 
 ### Self-Sizing Behavior
 
@@ -556,7 +556,7 @@ This is why the pool stores buffers with `length=0, capacity=N` semantics: the c
 
 **File**: `internal/output/text.go`
 
-All output formatting in gogrep uses the "append into caller-provided buffer" pattern, achieving zero allocation per formatted result.
+All output formatting in agrep uses the "append into caller-provided buffer" pattern, achieving zero allocation per formatted result.
 
 ### The Pattern
 
@@ -971,7 +971,7 @@ This creates a new function value on each call. In Go, a function literal that c
 
 This is a micro-optimization, but it illustrates a general principle: **avoid allocations in common cases, even small ones**. In a search of 100K files, many will be empty (e.g., `__init__.py` files, empty `.gitkeep` files). If each empty file allocated a closure, that's thousands of tiny allocations the GC must track. The `noopCloser` pattern eliminates them entirely.
 
-The same principle appears throughout gogrep:
+The same principle appears throughout agrep:
 - `separatorLine` is a package-level `[]byte("--")` in `internal/output/text.go` rather than allocated per separator.
 - ANSI color codes are package-level `[]byte` variables in `internal/output/color.go` rather than per-format-call allocations.
 - `Match` stores integer offsets rather than `[]byte` slices to avoid per-match pointer fields.
@@ -1044,7 +1044,7 @@ In the pprof interactive shell:
 For real-time GC behavior during a search:
 
 ```bash
-GODEBUG=gctrace=1 ./bin/gogrep -r "pattern" /some/directory 2>&1 | head -20
+GODEBUG=gctrace=1 ./bin/agrep -r "pattern" /some/directory 2>&1 | head -20
 ```
 
 Output format:

@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dl/gogrep/internal/index"
-	"github.com/dl/gogrep/internal/regex"
-	"github.com/dl/gogrep/internal/walker"
+	"github.com/DanielLaubacher/agrep/internal/index"
+	"github.com/DanielLaubacher/agrep/internal/regex"
+	"github.com/DanielLaubacher/agrep/internal/walker"
 )
 
 // runClearIndex handles --clear-index PATH: delete index state for every
@@ -21,11 +21,11 @@ func runClearIndex(path string) int {
 		return 2
 	}
 	if len(cleared) == 0 {
-		fmt.Fprintf(os.Stderr, "gogrep: no index found under %s\n", path)
+		fmt.Fprintf(os.Stderr, "agrep: no index found under %s\n", path)
 		return 1
 	}
 	for _, root := range cleared {
-		fmt.Fprintf(os.Stderr, "gogrep: cleared index for %s\n", root)
+		fmt.Fprintf(os.Stderr, "agrep: cleared index for %s\n", root)
 	}
 	return 0
 }
@@ -113,7 +113,7 @@ func indexedFileChannel(cfg Config, root string) (<-chan walker.FileEntry, bool)
 			logWarn("index build failed, scanning cold: %v", err)
 			return nil, false
 		}
-		fmt.Fprintf(os.Stderr, "gogrep: indexed %s (%d files, %d read, %d reused)\n",
+		fmt.Fprintf(os.Stderr, "agrep: indexed %s (%d files, %d read, %d reused)\n",
 			absRoot, stats.Files, stats.Read, stats.Reused)
 	}
 	if !meta.Opts.Equal(opts) {
@@ -144,7 +144,7 @@ func indexedFileChannel(cfg Config, root string) (<-chan walker.FileEntry, bool)
 			logWarn("index rebuild failed, scanning cold: %v", err)
 			return nil, false
 		}
-		fmt.Fprintf(os.Stderr, "gogrep: reindexed %s (%d files, %d read, %d reused)\n",
+		fmt.Fprintf(os.Stderr, "agrep: reindexed %s (%d files, %d read, %d reused)\n",
 			absRoot, stats.Files, stats.Read, stats.Reused)
 		if ix, err = index.Load(dir); err != nil {
 			logWarn("index load failed, scanning cold: %v", err)

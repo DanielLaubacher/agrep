@@ -1,4 +1,4 @@
-# gogrep
+# agrep
 
 Linux-only, high-performance grep alternative in Go with AVX2 SIMD acceleration.
 
@@ -6,8 +6,8 @@ Linux-only, high-performance grep alternative in Go with AVX2 SIMD acceleration.
 
 Requires Go 1.26+ with `GOEXPERIMENT=simd` (set automatically by Makefile).
 
-- `make build` — build to `bin/gogrep` (no PCRE: `-P` is stubbed out to avoid a ~5ms/invocation startup tax from modernc.org/libc's /etc/services-parsing init)
-- `make build-pcre` — build `bin/gogrep-pcre` with `-tags pcre` (full `-P` support)
+- `make build` — build to `bin/agrep` (no PCRE: `-P` is stubbed out to avoid a ~5ms/invocation startup tax from modernc.org/libc's /etc/services-parsing init)
+- `make build-pcre` — build `bin/agrep-pcre` with `-tags pcre` (full `-P` support)
 - `make test` — `go test -race ./...` (skips PCRE under race) + PCRE tests separately (`-tags pcre`)
 - `make bench` — run benchmarks (matchers, input, SIMD)
 - `make lint` — `go vet ./...`
@@ -17,7 +17,7 @@ Requires Go 1.26+ with `GOEXPERIMENT=simd` (set automatically by Makefile).
 
 ## Architecture
 
-    CLI (cmd/gogrep/main.go) — manual flag parsing, no external framework
+    CLI (cmd/agrep/main.go) — manual flag parsing, no external framework
       -> Config (internal/cli/config.go)
       -> Walker (internal/walker/) — raw getdents64, .gitignore support
       -> Scheduler (internal/scheduler/) — worker pool
@@ -51,7 +51,7 @@ Orchestration: `internal/cli/run.go`
 
 ## File Layout
 
-- `cmd/gogrep/` — entry point, manual flag parsing (no cobra)
+- `cmd/agrep/` — entry point, manual flag parsing (no cobra)
 - `internal/cli/` — config + orchestration (`run.go` wires everything)
 - `internal/walker/` — directory traversal (getdents64 + dirent parsing)
 - `internal/scheduler/` — worker pool + concurrency

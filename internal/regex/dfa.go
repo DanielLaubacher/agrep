@@ -14,7 +14,7 @@ package regex
 import (
 	"slices"
 
-	"github.com/dl/gogrep/internal/simd"
+	"github.com/DanielLaubacher/agrep/internal/simd"
 )
 
 const (

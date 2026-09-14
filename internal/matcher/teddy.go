@@ -3,7 +3,7 @@ package matcher
 import (
 	"bytes"
 
-	"github.com/dl/gogrep/internal/simd"
+	"github.com/DanielLaubacher/agrep/internal/simd"
 )
 
 // TeddyMatcher matches 2..8 fixed patterns using the rare-pair Teddy SIMD

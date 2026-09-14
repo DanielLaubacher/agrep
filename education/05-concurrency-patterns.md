@@ -1,6 +1,6 @@
-# Concurrency Patterns and Parallel Architecture in gogrep
+# Concurrency Patterns and Parallel Architecture in agrep
 
-This document provides an exhaustive analysis of the concurrency patterns used in gogrep, a high-performance Linux-only grep tool written in Go. Every concurrent structure, synchronization primitive, and design decision is examined from first principles. All code references point to the actual implementation files.
+This document provides an exhaustive analysis of the concurrency patterns used in agrep, a high-performance Linux-only grep tool written in Go. Every concurrent structure, synchronization primitive, and design decision is examined from first principles. All code references point to the actual implementation files.
 
 ---
 
@@ -26,7 +26,7 @@ This document provides an exhaustive analysis of the concurrency patterns used i
 
 ## 1. The Big Picture: Pipeline Architecture
 
-gogrep's recursive search mode (`gogrep -r pattern directory`) uses a three-stage concurrent pipeline. Each stage runs in its own goroutine(s), connected by buffered channels:
+agrep's recursive search mode (`agrep -r pattern directory`) uses a three-stage concurrent pipeline. Each stage runs in its own goroutine(s), connected by buffered channels:
 
 ```
 Walker (NumCPU goroutines)
@@ -508,7 +508,7 @@ All workers range over the same `files` channel. When multiple goroutines receiv
 2. **The receive is approximately fair.** Go's channel implementation uses a FIFO queue of waiting receivers. When a value is sent, the longest-waiting goroutine gets it. Over time, work is distributed evenly.
 3. **When the channel is closed, the range loop exits.** All workers terminate cleanly.
 
-This is simpler than explicit work stealing (where workers steal from each other's queues). The tradeoff is that channel-based distribution has higher overhead per item (~50ns for an uncontended channel operation) compared to lock-free work stealing (~10-20ns). For gogrep, this is negligible because each item represents a file that takes microseconds to process.
+This is simpler than explicit work stealing (where workers steal from each other's queues). The tradeoff is that channel-based distribution has higher overhead per item (~50ns for an uncontended channel operation) compared to lock-free work stealing (~10-20ns). For agrep, this is negligible because each item represents a file that takes microseconds to process.
 
 ### 3.4 Atomic Sequence Numbers
 
@@ -734,10 +734,10 @@ Key details:
 
 ### 4.4 Why Ordering Matters
 
-Without ordering, the same `gogrep -r pattern directory` command would produce different output on different runs. This is problematic for:
+Without ordering, the same `agrep -r pattern directory` command would produce different output on different runs. This is problematic for:
 
-- **Diff-based testing**: Tests that compare gogrep's output to expected output would be flaky.
-- **Piping to other tools**: `gogrep | sort` would work, but `gogrep | head -20` would give different results each time.
+- **Diff-based testing**: Tests that compare agrep's output to expected output would be flaky.
+- **Piping to other tools**: `agrep | sort` would work, but `agrep | head -20` would give different results each time.
 - **User expectations**: When a user runs the same command twice, they expect the same output. Non-deterministic output erodes trust.
 - **Debugging**: When investigating a bug, reproducing the exact output is valuable.
 
@@ -1113,7 +1113,7 @@ This is dependency injection at the value level. Each component declares exactly
 
 **File: `internal/cli/run.go`**
 
-gogrep supports four execution modes, each with different concurrency characteristics:
+agrep supports four execution modes, each with different concurrency characteristics:
 
 ### 10.1 Stdin Mode (Single-Goroutine)
 
@@ -1300,7 +1300,7 @@ The pipeline does not use `context.Context` for cancellation. There is no mechan
 
 ## 13. Why Not io_uring
 
-gogrep includes an experimental `internal/uring/` package with a minimal io_uring wrapper. Benchmarking showed that batched io_uring was 1.3-3x SLOWER than direct syscalls for grep workloads. The reasons are instructive:
+agrep includes an experimental `internal/uring/` package with a minimal io_uring wrapper. Benchmarking showed that batched io_uring was 1.3-3x SLOWER than direct syscalls for grep workloads. The reasons are instructive:
 
 ### 13.1 Small Batch Sizes
 

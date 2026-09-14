@@ -1,5 +1,5 @@
 #!/bin/bash
-# profile.sh — Build, benchmark vs rg, and CPU/mem profile gogrep.
+# profile.sh — Build, benchmark vs rg, and CPU/mem profile agrep.
 #
 # Usage:
 #   ./scripts/profile.sh              # run all benchmarks + profile
@@ -18,8 +18,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BIN="$ROOT_DIR/bin/gogrep"
-PROF_DIR="/tmp/gogrep-prof"
+BIN="$ROOT_DIR/bin/agrep"
+PROF_DIR="/tmp/agrep-prof"
 
 SEARCH_DIR="${SEARCH_DIR:-/usr/include}"
 PATTERN="${PATTERN:-define}"
@@ -35,8 +35,8 @@ bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 sep()  { echo "────────────────────────────────────────"; }
 
 build() {
-    bold "Building gogrep..."
-    (cd "$ROOT_DIR" && go build -o "$BIN" ./cmd/gogrep)
+    bold "Building agrep..."
+    (cd "$ROOT_DIR" && go build -o "$BIN" ./cmd/agrep)
     echo "built: $BIN"
 }
 
@@ -56,39 +56,39 @@ run_bench() {
 }
 
 do_bench() {
-    bold "=== Benchmarks: gogrep vs rg ==="
+    bold "=== Benchmarks: agrep vs rg ==="
     echo "dir=$SEARCH_DIR  pattern=$PATTERN  runs=$RUNS  warmup=$WARMUP"
     sep
 
     # 1. Files-only (-l)
     run_bench "Files only (-l)" \
-        -n gogrep "$BIN -l --no-ignore --hidden '$PATTERN' $SEARCH_DIR" \
+        -n agrep "$BIN -l --no-ignore --hidden '$PATTERN' $SEARCH_DIR" \
         -n rg     "rg -l --no-ignore --hidden '$PATTERN' $SEARCH_DIR"
 
     # 2. Full output (default)
     run_bench "Full output" \
-        -n gogrep "$BIN --no-ignore --hidden '$PATTERN' $SEARCH_DIR" \
+        -n agrep "$BIN --no-ignore --hidden '$PATTERN' $SEARCH_DIR" \
         -n rg     "rg --no-ignore --hidden '$PATTERN' $SEARCH_DIR"
 
     # 3. Full output + line numbers
     run_bench "Full output + line numbers (-n)" \
-        -n gogrep "$BIN -n --no-ignore --hidden '$PATTERN' $SEARCH_DIR" \
+        -n agrep "$BIN -n --no-ignore --hidden '$PATTERN' $SEARCH_DIR" \
         -n rg     "rg -n --no-ignore --hidden '$PATTERN' $SEARCH_DIR"
 
     # 4. Regex
     run_bench "Regex (func\\w+)" \
-        -n gogrep "$BIN -rn --no-ignore --hidden 'func\w+' $SEARCH_DIR" \
+        -n agrep "$BIN -rn --no-ignore --hidden 'func\w+' $SEARCH_DIR" \
         -n rg     "rg -n --no-ignore --hidden 'func\w+' $SEARCH_DIR"
 
     # 5. Count only
     run_bench "Count only (-c)" \
-        -n gogrep "$BIN -c --no-ignore --hidden '$PATTERN' $SEARCH_DIR" \
+        -n agrep "$BIN -c --no-ignore --hidden '$PATTERN' $SEARCH_DIR" \
         -n rg     "rg -c --no-ignore --hidden '$PATTERN' $SEARCH_DIR"
 
     # 6. With gitignore (respects .gitignore)
     if [ -d "$ROOT_DIR/../" ]; then
         run_bench "With gitignore (~/dev/)" \
-            -n gogrep "$BIN -rn 'import' $ROOT_DIR/../" \
+            -n agrep "$BIN -rn 'import' $ROOT_DIR/../" \
             -n rg     "rg -n 'import' $ROOT_DIR/../"
     fi
 }

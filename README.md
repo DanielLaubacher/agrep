@@ -1,4 +1,4 @@
-# gogrep
+# agrep
 
 > **v0.0.1** | **Experimental** — APIs and flags may change without notice.
 
@@ -35,7 +35,7 @@ Built vibe coding with [Claude Code](https://claude.com/claude-code).
 
 ```sh
 # Build
-GOEXPERIMENT=simd go build -o bin/gogrep ./cmd/gogrep
+GOEXPERIMENT=simd go build -o bin/agrep ./cmd/agrep
 
 # Or use make
 make build
@@ -44,7 +44,7 @@ make build
 ## Installation
 
 ```sh
-GOEXPERIMENT=simd go install github.com/dl/gogrep/cmd/gogrep@latest
+GOEXPERIMENT=simd go install github.com/DanielLaubacher/agrep/cmd/agrep@latest
 ```
 
 Or with make:
@@ -72,52 +72,52 @@ make lint
 ## Usage
 
 ```
-gogrep [OPTIONS] PATTERN [FILE...]
-gogrep [OPTIONS] -e PATTERN [-e PATTERN...] [FILE...]
+agrep [OPTIONS] PATTERN [FILE...]
+agrep [OPTIONS] -e PATTERN [-e PATTERN...] [FILE...]
 ```
 
 If no files are given, reads from stdin.
 
 ```sh
 # Basic search
-gogrep "error" app.log
+agrep "error" app.log
 
 # Case-insensitive, recursive, with line numbers
-gogrep -rin "fixme" ./src/
+agrep -rin "fixme" ./src/
 
 # Fixed string with SIMD acceleration
-gogrep -F "[ERROR]" app.log
+agrep -F "[ERROR]" app.log
 
 # Multiple patterns (one SIMD Teddy scan)
-gogrep -F -e "timeout" -e "refused" -e "EOF" app.log
+agrep -F -e "timeout" -e "refused" -e "EOF" app.log
 
 # PCRE2 regex with lookbehind (requires the pcre build: make build-pcre)
-gogrep-pcre -P '(?<=error:\s)\w+' app.log
+agrep-pcre -P '(?<=error:\s)\w+' app.log
 
 # Regex pipeline: SIMD prefilter → extract digits (like grep|grep -o)
-gogrep -Fe 'ERROR' -toe '\d+' app.log
+agrep -Fe 'ERROR' -toe '\d+' app.log
 
 # Only-matching (like grep -o)
-gogrep -oe '\d+' app.log
+agrep -oe '\d+' app.log
 
 # Three-stage pipeline mixing engines
-gogrep -Fe 'HTTP' -Fte 'status' -toe '\d+' access.log
+agrep -Fe 'HTTP' -Fte 'status' -toe '\d+' access.log
 
 # Context lines
-gogrep -C3 "panic" app.log
+agrep -C3 "panic" app.log
 
 # Watch mode
-gogrep --watch "ERROR" /var/log/syslog
+agrep --watch "ERROR" /var/log/syslog
 
 # JSON output
-gogrep --json "error" app.log
+agrep --json "error" app.log
 ```
 
 See [help.md](help.md) for the full flag reference and more examples.
 
 ## Performance
 
-gogrep wins or ties ripgrep on every workload in its benchmark suite (up
+agrep wins or ties ripgrep on every workload in its benchmark suite (up
 to 10.9x faster on single-file counts, ~1.5x on recursive `-l`). See the
 measured table in [architecture.md](architecture.md#performance-vs-ripgrep)
 and the full optimization history in `education/`.
@@ -125,16 +125,16 @@ and the full optimization history in `education/`.
 ```sh
 # Build the pcre-less binary and race through a tree
 make build
-./bin/gogrep -rn 'ERROR.*timeout' /var/log
+./bin/agrep -rn 'ERROR.*timeout' /var/log
 ```
 
 ## Agent mode
 
-gogrep is purpose-built to serve AI agents as a sensing API: output token
+agrep is purpose-built to serve AI agents as a sensing API: output token
 budgets (`--max-tokens`), corpus surveys (`--outline --top K`), Markdown
 section context (`--sections`), one-pass multi-query execution
 (`--batch`), zero-hit variant guidance (`--suggest`), and verifiable
-citation spans (`--json` + `--get-region`). Run `gogrep --skill` to get
+citation spans (`--json` + `--get-region`). Run `agrep --skill` to get
 the agent operating manual (~850 tokens) for loading into an agent's
 context. See [agent-mode.md](agent-mode.md) for the design and examples.
 

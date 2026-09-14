@@ -1,4 +1,4 @@
-module github.com/dl/gogrep
+module github.com/DanielLaubacher/agrep
 
 go 1.26.0
 

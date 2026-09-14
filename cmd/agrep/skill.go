@@ -1,11 +1,11 @@
 package main
 
 // skillText is printed by --skill: operating instructions for an AI
-// agent using gogrep as a sensing API. --help documents flags; this
+// agent using agrep as a sensing API. --help documents flags; this
 // documents workflow. Keep it terse — it lands in an agent's context.
-// cmd/gogrep/skill_test.go guards it against drifting from the JSON
+// cmd/agrep/skill_test.go guards it against drifting from the JSON
 // types the code actually emits.
-const skillText = `# gogrep — agent skill
+const skillText = `# agrep — agent skill
 
 High-performance text search purpose-built for AI agents. Search is a
 sensing API: iterate cheap queries, budget your context, cite what you
@@ -18,19 +18,19 @@ normal outcome, not a failure — pair it with --suggest.
 ## Core workflow (corpus question-answering)
 
 1. Survey — who talks about the concept:
-     gogrep --outline --top 10 -r 'backoff' CORPUS/
+     agrep --outline --top 10 -r 'backoff' CORPUS/
    One row per file: count, path, exemplar (the file's most informative
    matching line). --rank density orders by matches/KB and demotes
    vendored/generated files — better than raw counts in big trees.
 
 2. Expand — probe a concept as several lexical variants in one pass:
      printf 'retry\nbackoff\nexponential delay\n' > /tmp/probes
-     gogrep --batch /tmp/probes --json -r CORPUS/
+     agrep --batch /tmp/probes --json -r CORPUS/
    N patterns cost one walk, not N. Matches carry "query"; the summary
    reports per-query totals, zero-hit queries listed explicitly.
 
 3. Narrow — read matches with context, under a budget:
-     gogrep -rn --scope --max-tokens 2000 'jittered backoff' CORPUS/
+     agrep -rn --scope --max-tokens 2000 'jittered backoff' CORPUS/
    --scope names the enclosing function/class (Markdown: the heading;
    --sections is the Markdown-only variant). --max-tokens caps output;
    the summary reports exactly what was omitted (totals are always
@@ -39,7 +39,7 @@ normal outcome, not a failure — pair it with --suggest.
    past 3 are tallied, and shown + collapsed = true total.
 
 4. Zero hits — let the tool propose the next query:
-     gogrep -r --suggest 'ConnectTimeout' CORPUS/
+     agrep -r --suggest 'ConnectTimeout' CORPUS/
    Probes the case-insensitive form and identifier fragments, reports
    which occur and how often (rarest first). Never silent: "no variant
    occurs" and "no derivable variants" are reported as findings.
@@ -49,7 +49,7 @@ normal outcome, not a failure — pair it with --suggest.
    --json matches carry "span" [start,end) byte range and "region"
    ("path@start-end"). Quote using the region id, and re-fetch to
    verify before asserting:
-     gogrep --get-region 'CORPUS/book.md@3120-3245'
+     agrep --get-region 'CORPUS/book.md@3120-3245'
    Line form 'file@:120-160' (1-based, inclusive) speaks the dialect
    of compilers and stack traces; --expand N adds N whole lines of
    context around either form. Multiline (-U) spans cite the same way.
@@ -59,10 +59,10 @@ normal outcome, not a failure — pair it with --suggest.
 - Identifiers: --ident treats the pattern as an identifier name —
   matches camelCase, snake_case, kebab-case, SCREAMING_SNAKE, flat,
   word-bounded (searching Match will not hit MatchSet):
-     gogrep -rn --ident 'connectTimeout' src/
+     agrep -rn --ident 'connectTimeout' src/
 - Enumerate values: --histogram counts distinct matched texts
   (built-in sort|uniq -c), composing with -o pipelines:
-     gogrep -r --histogram -oe 'ERR_[A-Z_]+' src/
+     agrep -r --histogram -oe 'ERR_[A-Z_]+' src/
 - Cross-line shapes: -U lets the pattern match across lines; output
   and span cover the whole block; ^ $ anchor per line. Regex only.
 
@@ -71,7 +71,7 @@ normal outcome, not a failure — pair it with --suggest.
 - --changed-since REF — only files changed since the git ref (plus
   untracked). The right default while iterating on a branch.
 - --files-from - — search files listed on stdin: one query's -l
-  output feeds the next (gogrep -rl A . | gogrep --files-from - B).
+  output feeds the next (agrep -rl A . | agrep --files-from - B).
 - --with-file P / --without-file P — file-level conditions: report
   files matching the pattern that also/never contain P ("call sites
   not yet migrated"). Suppressed-file counts go to stderr, never lost.
@@ -81,9 +81,9 @@ normal outcome, not a failure — pair it with --suggest.
 
 Add --use-index to any recursive search over a tree you will query
 more than once:
-     gogrep --use-index -rn 'pattern' ROOT/
+     agrep --use-index -rn 'pattern' ROOT/
 First use builds a trigram index (roughly one cold scan, stored under
-$XDG_CACHE_HOME/gogrep/); later queries prune to candidate files.
+$XDG_CACHE_HOME/agrep/); later queries prune to candidate files.
 Freshness is automatic — every query stat-sweeps and incrementally
 reindexes, so results are always identical to a cold scan; never
 stale. Pays off from the second query; not for one-shot searches.
@@ -122,7 +122,7 @@ the whole matched block and line_number is its first line.
 Multi-stage narrowing: -t pipes each stage's matched text into the
 next pattern; -o emits only the matched text. Example over a log line
 "ERROR conn reset timeout=350ms":
-     gogrep -e 'ERROR' -te 'timeout=\d+' -toe '\d+' app.log
+     agrep -e 'ERROR' -te 'timeout=\d+' -toe '\d+' app.log
    stage 1 keeps lines containing ERROR
    stage 2 narrows to their "timeout=350" fragments
    stage 3 emits just "350"

@@ -1,5 +1,5 @@
-// Gogrep-extract mirrors a library of PDF/EPUB/MOBI files into a tree of
-// plain-text Markdown files that gogrep (and agents driving it) can
+// Agrep-extract mirrors a library of PDF/EPUB/MOBI files into a tree of
+// plain-text Markdown files that agrep (and agents driving it) can
 // search. The mirror preserves the source directory structure, one .md
 // per book, with front-matter provenance and page markers for citations.
 // Sources are never written to.
@@ -70,7 +70,7 @@ func main() {
 	verbose := flag.Bool("v", false, "log each file")
 	flag.Parse()
 	if *src == "" || *dst == "" {
-		fmt.Fprintln(os.Stderr, "usage: gogrep-extract -src LIBRARY -dst MIRROR [-workers N] [-force]")
+		fmt.Fprintln(os.Stderr, "usage: agrep-extract -src LIBRARY -dst MIRROR [-workers N] [-force]")
 		os.Exit(2)
 	}
 

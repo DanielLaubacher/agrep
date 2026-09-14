@@ -8,10 +8,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/dl/gogrep/internal/input"
-	"github.com/dl/gogrep/internal/matcher"
-	"github.com/dl/gogrep/internal/output"
-	"github.com/dl/gogrep/internal/walker"
+	"github.com/DanielLaubacher/agrep/internal/input"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/output"
+	"github.com/DanielLaubacher/agrep/internal/walker"
 )
 
 // Scheduler manages a pool of workers that search files concurrently.

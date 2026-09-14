@@ -13,10 +13,10 @@ import (
 	"sync/atomic"
 	"unicode"
 
-	"github.com/dl/gogrep/internal/input"
-	"github.com/dl/gogrep/internal/matcher"
-	"github.com/dl/gogrep/internal/output"
-	"github.com/dl/gogrep/internal/scheduler"
+	"github.com/DanielLaubacher/agrep/internal/input"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
+	"github.com/DanielLaubacher/agrep/internal/output"
+	"github.com/DanielLaubacher/agrep/internal/scheduler"
 )
 
 // loadBatchPatterns reads one pattern per line; blank lines and lines

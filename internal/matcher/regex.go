@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"regexp"
 
-	"github.com/dl/gogrep/internal/simd"
+	"github.com/DanielLaubacher/agrep/internal/simd"
 )
 
 // RegexMatcher uses Go's RE2 regexp engine with optional SIMD literal prefiltering.
