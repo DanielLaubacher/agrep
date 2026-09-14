@@ -10,6 +10,7 @@ import (
 type MatcherOpts struct {
 	MaxCols      int  // max columns for snippet extraction (0 = full lines)
 	NeedLineNums bool // compute line numbers (false = skip for speed)
+	Multiline    bool // -U: patterns may match across line boundaries
 }
 
 // StageConfig describes one stage in a match pipeline.
@@ -29,6 +30,16 @@ type StageConfig struct {
 func NewMatcher(patterns []string, fixed bool, usePCRE bool, ignoreCase bool, invert bool, opts MatcherOpts) (Matcher, error) {
 	if len(patterns) == 0 {
 		return nil, fmt.Errorf("no patterns provided")
+	}
+
+	// -U routes to the dedicated cross-line matcher (RE2 on the whole
+	// buffer). Config validation rejects the unsupported combinations
+	// (-P, -v, -t pipelines, --watch) before we get here.
+	if opts.Multiline {
+		if usePCRE || invert {
+			return nil, fmt.Errorf("-U cannot combine with -P or -v")
+		}
+		return NewMultilineMatcher(patterns, fixed, ignoreCase, opts)
 	}
 
 	if usePCRE {

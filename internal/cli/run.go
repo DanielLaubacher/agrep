@@ -92,11 +92,17 @@ func Run(cfg Config) int {
 	}
 
 	maxCols := effectiveMaxCols(cfg)
+	// Multiline blocks must not be column-truncated unless the user
+	// explicitly asked for a limit.
+	if cfg.Multiline && cfg.MaxColumns == 0 {
+		maxCols = 0
+	}
 
 	opts := matcher.MatcherOpts{
 		MaxCols: maxCols,
 		// JSON consumers (agents) always need real line numbers.
 		NeedLineNums: cfg.LineNumbers || cfg.JSONOutput,
+		Multiline:    cfg.Multiline,
 	}
 	// Histogram counts matched spans — never truncate the lines they
 	// live in.

@@ -62,6 +62,7 @@ type Config struct {
 	Histogram bool   // --histogram: distinct matched texts with counts
 	Rank      string // --rank: outline order — "count" (default) or "density"
 	Collapse  bool   // --collapse: suppress repeats of identical match lines
+	Multiline bool   // -U/--multiline: patterns may match across lines
 	TopK      int    // --top: limit outline/histogram to the K busiest entries
 	Sections  bool   // --sections: annotate matches with Markdown headings
 	Scope     bool   // --scope: annotate matches with the enclosing definition
@@ -154,6 +155,21 @@ func (c *Config) Validate() error {
 	}
 	if c.FilesFrom != "" && c.ChangedSince != "" {
 		return fmt.Errorf("cannot use --files-from and --changed-since together")
+	}
+	if c.Multiline {
+		if c.PCRE || c.Invert || c.WatchMode {
+			return fmt.Errorf("-U (multiline) cannot combine with -P, -v, or --watch")
+		}
+		for _, pipeline := range c.Pipelines {
+			if len(pipeline) > 1 {
+				return fmt.Errorf("-U (multiline) cannot combine with -t pipelines")
+			}
+			for _, stage := range pipeline {
+				if stage.PCRE {
+					return fmt.Errorf("-U (multiline) cannot combine with -P")
+				}
+			}
+		}
 	}
 	return nil
 }

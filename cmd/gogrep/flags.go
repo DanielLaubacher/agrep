@@ -32,6 +32,8 @@ Options:
   -A, --after-context NUM  Print NUM lines after match
   -C, --context NUM        Print NUM lines before and after match
   -M, --max-columns NUM    Truncate lines longer than NUM bytes (0=auto, -1=no limit)
+  -U, --multiline          Patterns may match across lines; output spans the
+                           whole matched block (regex only; ^ $ match per line)
       --color MODE         Use color: always, never, auto (default: auto)
       --colour MODE        Alias for --color
   -g, --glob PATTERN       Include/exclude files by glob (prefix ! to exclude)
@@ -224,6 +226,8 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			cfg.FollowSymlinks = true
 		case "--watch":
 			cfg.WatchMode = true
+		case "-U", "--multiline":
+			cfg.Multiline = true
 		case "-h", "--help":
 			showHelp = true
 		case "--skill":
