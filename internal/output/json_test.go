@@ -127,7 +127,7 @@ func TestJSONFormatter_SummaryTrailer(t *testing.T) {
 	}
 	buf := f.Format(nil, result, false)
 	got := string(f.Finish(buf))
-	if !strings.HasSuffix(strings.TrimSpace(got), `{"type":"summary","files":1,"lines":1}`) {
+	if !strings.HasSuffix(strings.TrimSpace(got), `{"type":"summary","files":1,"lines":1,"errors":0}`) {
 		t.Errorf("missing summary trailer, got %q", got)
 	}
 }
@@ -135,8 +135,20 @@ func TestJSONFormatter_SummaryTrailer(t *testing.T) {
 func TestJSONFormatter_EmptySummary(t *testing.T) {
 	f := NewJSONFormatter()
 	got := strings.TrimSpace(string(f.Finish(nil)))
-	if got != `{"type":"summary","files":0,"lines":0}` {
+	if got != `{"type":"summary","files":0,"lines":0,"errors":0}` {
 		t.Errorf("zero-result summary = %q", got)
+	}
+}
+
+func TestJSONFormatter_ErrorObjects(t *testing.T) {
+	f := NewJSONFormatter()
+	got := string(f.Format(nil, Result{FilePath: "locked.txt", Err: errPermission}, true))
+	if got != `{"type":"error","file":"locked.txt","error":"permission denied"}`+"\n" {
+		t.Errorf("error object = %q", got)
+	}
+	sum := string(f.Finish(nil))
+	if !strings.Contains(sum, `"errors":1`) {
+		t.Errorf("summary must count errors, got %q", sum)
 	}
 }
 
@@ -148,7 +160,7 @@ func TestJSONFormatter_CountMode(t *testing.T) {
 	buf = f.Format(buf, Result{FilePath: "b.txt"}, true)
 	got := string(f.Finish(buf))
 	want := `{"type":"count","file":"a.txt","count":7}` + "\n" +
-		`{"type":"summary","files":1,"lines":7}` + "\n"
+		`{"type":"summary","files":1,"lines":7,"errors":0}` + "\n"
 	if got != want {
 		t.Errorf("count mode = %q, want %q", got, want)
 	}
@@ -161,7 +173,7 @@ func TestJSONFormatter_FilesMode(t *testing.T) {
 	got := string(f.Finish(f.Format(nil, r, true)))
 	// No degenerate match object, no fabricated line counts.
 	want := `{"type":"file","file":"a.txt"}` + "\n" +
-		`{"type":"summary","files":1}` + "\n"
+		`{"type":"summary","files":1,"errors":0}` + "\n"
 	if got != want {
 		t.Errorf("files mode = %q, want %q", got, want)
 	}
@@ -235,3 +247,10 @@ func TestJSONFormatter_MatchPositions(t *testing.T) {
 		t.Errorf("position[0] = %v, want {start:0, end:5}", pos0)
 	}
 }
+
+// errPermission is a fixed error for error-object tests.
+var errPermission = errFixed("permission denied")
+
+type errFixed string
+
+func (e errFixed) Error() string { return string(e) }

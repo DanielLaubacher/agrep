@@ -271,7 +271,7 @@ func runFiles(paths []string, m matcher.Matcher, reader input.Reader, formatter 
 		result := searchReader(reader, path, m, mode, lineNums)
 		if result.Err != nil {
 			logWarn("%s: %v", path, result.Err)
-			continue
+			// Fall through: JSON mode also records the error in-stream.
 		}
 		if result.HasMatch() {
 			hasMatch = true

@@ -21,6 +21,7 @@ type JSONFormatter struct {
 
 	files int
 	lines int
+	errs  int
 	// Per-query totals for --batch, in first-seen order.
 	queryOrder  []string
 	queryTotals map[string]*[2]int // query -> {files, lines}
@@ -89,7 +90,19 @@ func (f *JSONFormatter) tally(query string, lines int) {
 }
 
 func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte {
-	if result.Err != nil || !result.HasMatch() {
+	// Unreadable files shrink the corpus; that belongs in the stream,
+	// not just on stderr — an agent must never mistake "couldn't read"
+	// for "no matches".
+	if result.Err != nil {
+		f.errs++
+		buf = append(buf, `{"type":"error","file":`...)
+		buf = appendJSONString(buf, result.FilePath)
+		buf = append(buf, `,"error":`...)
+		buf = appendJSONString(buf, result.Err.Error())
+		buf = append(buf, "}\n"...)
+		return buf
+	}
+	if !result.HasMatch() {
 		return buf
 	}
 
@@ -185,6 +198,8 @@ func (f *JSONFormatter) Finish(buf []byte) []byte {
 		buf = append(buf, `,"lines":`...)
 		buf = strconv.AppendInt(buf, int64(f.lines), 10)
 	}
+	buf = append(buf, `,"errors":`...)
+	buf = strconv.AppendInt(buf, int64(f.errs), 10)
 	if len(f.queryOrder) > 0 {
 		buf = append(buf, `,"queries":[`...)
 		for i, q := range f.queryOrder {

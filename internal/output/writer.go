@@ -1,6 +1,7 @@
 package output
 
 import (
+	"fmt"
 	"os"
 
 	"golang.org/x/sys/unix"
@@ -98,10 +99,9 @@ func (ow *OrderedWriter) WriteOrdered(results <-chan Result, onMatch func()) {
 
 func (ow *OrderedWriter) writeResult(out []byte, r Result) []byte {
 	if r.Err != nil {
-		if r.Closer != nil {
-			r.Closer()
-		}
-		return out
+		// Never silent: stderr for humans; the formatter additionally
+		// puts an error object in the stream for JSON consumers.
+		fmt.Fprintf(os.Stderr, "gogrep: %s: %v\n", r.FilePath, r.Err)
 	}
 	out = ow.formatter.Format(out, r, ow.multiFile)
 	if r.Closer != nil {
