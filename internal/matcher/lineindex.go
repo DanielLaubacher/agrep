@@ -129,6 +129,69 @@ func matchSetFromLocs(data []byte, locs [][2]int, maxCols int, needLineNums bool
 	return MatchSet{Data: data, Matches: matches, Positions: locs}
 }
 
+// matchSetBuilder constructs a MatchSet incrementally as match locations
+// stream in from the search. Doing snippet extraction and newline counting
+// per match — while the scan front's data is still cache-hot — avoids a
+// second cold pass over buffers larger than L3 (the streaming counterpart
+// of matchSetFromLocs).
+type matchSetBuilder struct {
+	data             []byte
+	maxCols          int
+	needLineNums     bool
+	matches          []Match
+	positions        [][2]int
+	lastSnippetStart int
+	lineNum          int
+	prevOff          int
+}
+
+func newMatchSetBuilder(data []byte, maxCols int, needLineNums bool) matchSetBuilder {
+	return matchSetBuilder{
+		data:             data,
+		maxCols:          maxCols,
+		needLineNums:     needLineNums,
+		lastSnippetStart: -1,
+		lineNum:          1,
+	}
+}
+
+// add records one match location; the signature matches regex.FindAllIndexFunc.
+func (b *matchSetBuilder) add(matchStart, matchEnd int) bool {
+	snippetStart, snippetLen, posInSnippet := snippetFromOffset(b.data, matchStart, b.maxCols)
+
+	if b.needLineNums {
+		b.lineNum += bytes.Count(b.data[b.prevOff:matchStart], []byte{'\n'})
+		b.prevOff = matchStart
+	}
+
+	posEnd := min(posInSnippet+(matchEnd-matchStart), snippetLen)
+	posIdx := len(b.positions)
+	b.positions = append(b.positions, [2]int{posInSnippet, posEnd})
+
+	if snippetStart == b.lastSnippetStart {
+		last := &b.matches[len(b.matches)-1]
+		last.PosCount = posIdx - last.PosIdx + 1
+	} else {
+		b.matches = append(b.matches, Match{
+			LineNum:    b.lineNum,
+			LineStart:  snippetStart,
+			LineLen:    snippetLen,
+			ByteOffset: int64(snippetStart),
+			PosIdx:     posIdx,
+			PosCount:   1,
+		})
+		b.lastSnippetStart = snippetStart
+	}
+	return true
+}
+
+func (b *matchSetBuilder) finish() MatchSet {
+	if len(b.matches) == 0 {
+		return MatchSet{}
+	}
+	return MatchSet{Data: b.data, Matches: b.matches, Positions: b.positions}
+}
+
 // countUniqueLines counts how many distinct lines contain at least one offset.
 // Offsets must be sorted ascending.
 func countUniqueLines(data []byte, offsets []int) int {

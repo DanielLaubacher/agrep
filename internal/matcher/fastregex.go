@@ -29,6 +29,13 @@ func NewFastRegexMatcher(pattern string, ignoreCase bool, invert bool) (*FastReg
 	return &FastRegexMatcher{re: re, invert: invert}, nil
 }
 
+// LineBounded reports that no match spans a newline, so line-aligned chunks
+// of a buffer can be searched independently (and concurrently — the
+// underlying Regexp is immutable after compile).
+func (m *FastRegexMatcher) LineBounded() bool {
+	return !m.re.CanMatchNewline()
+}
+
 func (m *FastRegexMatcher) MatchExists(data []byte) bool {
 	if m.invert {
 		return len(data) > 0
@@ -43,8 +50,22 @@ func (m *FastRegexMatcher) CountAll(data []byte) int {
 		})
 	}
 
-	locs := m.re.FindAllIndex(data, -1)
-	return countLocsUniqueLines2(data, locs)
+	// Stream: count distinct matched lines without materializing locations,
+	// resolving each line end while the region is cache-hot.
+	count := 0
+	lineEnd := -1
+	m.re.FindAllIndexFunc(data, func(start, _ int) bool {
+		if start > lineEnd {
+			count++
+			if i := bytes.IndexByte(data[start:], '\n'); i >= 0 {
+				lineEnd = start + i
+			} else {
+				lineEnd = len(data)
+			}
+		}
+		return true
+	})
+	return count
 }
 
 func (m *FastRegexMatcher) FindAll(data []byte) MatchSet {
@@ -52,11 +73,9 @@ func (m *FastRegexMatcher) FindAll(data []byte) MatchSet {
 		return m.findAllInvert(data)
 	}
 
-	locs := m.re.FindAllIndex(data, -1)
-	if len(locs) == 0 {
-		return MatchSet{}
-	}
-	return matchSetFromLocs(data, locs, m.maxCols, m.needLineNums)
+	b := newMatchSetBuilder(data, m.maxCols, m.needLineNums)
+	m.re.FindAllIndexFunc(data, b.add)
+	return b.finish()
 }
 
 func (m *FastRegexMatcher) findAllInvert(data []byte) MatchSet {

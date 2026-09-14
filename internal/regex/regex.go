@@ -33,6 +33,10 @@ type Regexp struct {
 	engineType engineType
 	literal    []byte
 	literalCI  bool
+
+	// allowedBytes is the set of bytes any match can contain (union of all
+	// NFA consuming transitions). Used to bound rare-byte verify windows.
+	allowedBytes [256]bool
 }
 
 type engineType uint8
@@ -79,6 +83,7 @@ func compile_pattern(pattern string, baseFlags syntax.Flags) (*Regexp, error) {
 		vm:      vm,
 		flags:   flags,
 	}
+	rx.allowedBytes = computeAllowedBytes(nfa)
 
 	// Check if pattern is a pure literal
 	if nfa.Flags&FlagLiteral != 0 && re.Op == syntax.OpLiteral {
@@ -105,6 +110,20 @@ func compile_pattern(pattern string, baseFlags syntax.Flags) (*Regexp, error) {
 	rx.searchDFA = newSearchDFA(nfa)
 	rx.engineType = engineDFA
 
+	// Precompute every reachable transition at compile time. After this the
+	// DFAs are immutable, which makes Regexp safe for concurrent use (lazy
+	// computation would race when one Regexp is shared across goroutines).
+	// On cache overflow, fall back to the PikeVM (allocates per call, safe).
+	rx.searchDFA.warmStart()
+	if !rx.searchDFA.precomputeAll() || !rx.fwdDFA.precomputeAll() {
+		rx.fwdDFA = nil
+		rx.searchDFA = nil
+		rx.engineType = enginePikeVM
+		rx.prefilter = extractPrefilter(pattern, flags)
+		return rx, nil
+	}
+	rx.searchDFA.precomputed = true
+
 	// Extract prefilter literals
 	rx.prefilter = extractPrefilter(pattern, flags)
 
@@ -113,7 +132,6 @@ func compile_pattern(pattern string, baseFlags syntax.Flags) (*Regexp, error) {
 	// + per-line DFA calls) without benefit. Only keep rare-byte prefilter
 	// when start ranges are wide (>40 live bytes = >15% of byte space).
 	if rx.prefilter != nil && rx.prefilter.hasRareByte {
-		rx.searchDFA.warmStart()
 		liveBytes := 0
 		for b := 0; b < 256; b++ {
 			if rx.searchDFA.canStart[b] {
@@ -133,12 +151,20 @@ func (re *Regexp) String() string {
 	return re.pattern
 }
 
+// CanMatchNewline reports whether any match can contain a '\n' byte.
+// When false, matches never span lines, so a buffer may be searched in
+// line-aligned chunks (in parallel) without missing or splitting matches.
+func (re *Regexp) CanMatchNewline() bool {
+	return re.allowedBytes['\n']
+}
+
 // Match reports whether the byte slice b contains any match of the regexp.
 func (re *Regexp) Match(b []byte) bool {
 	if re.prefilter != nil && len(b) > 0 {
-		if !re.prefilterCheck(b) {
-			return false
-		}
+		// Candidate-driven: SIMD scan for the required literal/byte and
+		// verify only around hits. Far cheaper than walking the forward
+		// DFA over the whole buffer when the prefilter is selective.
+		return re.findIndexPrefiltered(b)[0] >= 0
 	}
 
 	switch re.engineType {
@@ -211,6 +237,39 @@ func (re *Regexp) FindAllIndex(b []byte, n int) [][2]int {
 		return re.searchDFA.findAllIndex(b, n)
 	default:
 		return re.vm.findAllIndex(b, n)
+	}
+}
+
+// FindAllIndexFunc streams all non-overlapping match locations to yield, in
+// order; yield returning false stops the search. Streaming lets the caller
+// process each match (line extraction, newline counting, formatting) while
+// the surrounding bytes are still cache-hot from the scan — on buffers larger
+// than L3 this avoids a second cold pass over the data.
+func (re *Regexp) FindAllIndexFunc(b []byte, yield func(start, end int) bool) {
+	if re.prefilter != nil && len(b) > 0 {
+		pf := re.prefilter
+		switch {
+		case pf.hasRareByte:
+			re.findAllIndexRareByteFunc(b, yield)
+		case pf.primaryIsPrefix && re.engineType == engineDFA:
+			re.findAllIndexPrefixLitFunc(b, yield)
+		default:
+			re.findAllIndexPrefilteredFunc(b, yield)
+		}
+		return
+	}
+
+	if re.engineType == engineDFA {
+		re.searchDFA.findAllIndexFunc(b, yield)
+		return
+	}
+
+	// Cold engines (literal, PikeVM): collect then replay. These either
+	// stream internally already (literal) or are rare fallbacks.
+	for _, loc := range re.FindAllIndex(b, -1) {
+		if !yield(loc[0], loc[1]) {
+			return
+		}
 	}
 }
 
@@ -400,18 +459,65 @@ func (re *Regexp) literalFindAllIndex(b []byte, n int) [][2]int {
 
 // --- Prefilter-accelerated paths ---
 
-func (re *Regexp) prefilterCheck(data []byte) bool {
+// nextPrimary returns the position of the next primary-literal hit at or
+// after pos, or -1.
+func (re *Regexp) nextPrimary(data []byte, pos int) int {
 	pf := re.prefilter
-	if pf.hasRareByte {
-		return simd.IndexByte(data, pf.rareByte) >= 0
+	if pos >= len(data) {
+		return -1
 	}
 	var idx int
 	if pf.primaryCI {
-		idx = simd.IndexCaseInsensitive(data, pf.primary)
+		idx = simd.IndexCaseInsensitive(data[pos:], pf.primary)
 	} else {
-		idx = simd.Index(data, pf.primary)
+		idx = bytes.Index(data[pos:], pf.primary)
 	}
-	return idx >= 0
+	if idx < 0 {
+		return -1
+	}
+	return pos + idx
+}
+
+// lineBoundsAround returns [start, end) of the line containing off.
+func lineBoundsAround(data []byte, off int) (int, int) {
+	start := 0
+	if off > 0 {
+		if i := bytes.LastIndexByte(data[:off], '\n'); i >= 0 {
+			start = i + 1
+		}
+	}
+	end := len(data)
+	if i := bytes.IndexByte(data[off:], '\n'); i >= 0 {
+		end = off + i
+	}
+	return start, end
+}
+
+// rareByteWindow returns the verify window [left, right) for a rare-byte hit
+// at off. Every byte inside a match is consumable by the pattern, so a match
+// containing off lies entirely within the maximal run of allowed bytes
+// around it — walking outward over allowed bytes bounds the window on both
+// sides. This keeps the DFA from re-scanning from every plausible start
+// across the rest of the line.
+func (re *Regexp) rareByteWindow(data []byte, off int) (int, int) {
+	allowed := &re.allowedBytes
+	left := off
+	for left > 0 {
+		b := data[left-1]
+		if b == '\n' || !allowed[b] {
+			break
+		}
+		left--
+	}
+	right := off + 1
+	for right < len(data) {
+		b := data[right]
+		if b == '\n' || !allowed[b] {
+			break
+		}
+		right++
+	}
+	return left, right
 }
 
 func (re *Regexp) findIndexPrefiltered(data []byte) [2]int {
@@ -421,131 +527,110 @@ func (re *Regexp) findIndexPrefiltered(data []byte) [2]int {
 		return re.findIndexRareByte(data)
 	}
 
-	// SIMD scan for primary literal
-	var offsets []int
-	if pf.primaryCI {
-		offsets = simd.IndexAllCaseInsensitive(data, pf.primary)
-	} else {
-		offsets = simd.IndexAll(data, pf.primary)
-	}
+	anchored := pf.primaryIsPrefix && re.engineType == engineDFA
+	pos := 0
+	for {
+		hit := re.nextPrimary(data, pos)
+		if hit < 0 {
+			return [2]int{-1, -1}
+		}
 
-	if len(offsets) == 0 {
-		return [2]int{-1, -1}
-	}
-
-	// For each candidate, find containing line and verify with engine
-	for _, off := range offsets {
-		// Find line boundaries
-		lineStart := 0
-		if off > 0 {
-			if i := bytes.LastIndexByte(data[:off], '\n'); i >= 0 {
-				lineStart = i + 1
+		if anchored {
+			// Every match starts with the literal: verify directly at the hit.
+			if m := re.searchDFA.tryMatchAt(data, hit); m[0] >= 0 {
+				return m
 			}
-		}
-		lineEnd := len(data)
-		if i := bytes.IndexByte(data[off:], '\n'); i >= 0 {
-			lineEnd = off + i
-		}
-
-		line := data[lineStart:lineEnd]
-
-		// Check extras
-		posInLine := off - lineStart + len(pf.primary)
-		if !re.checkExtras(line, posInLine) {
+			pos = hit + 1
 			continue
 		}
 
-		// Verify with engine on the line
-		var match [2]int
-		switch re.engineType {
-		case engineDFA:
-			match = re.searchDFA.findIndex(line)
-		default:
-			match = re.vm.findIndex(line)
+		// Mid-pattern literal: verify the containing line. A failed verify
+		// clears the whole line (extras are position-monotone and the DFA
+		// scanned the full line), so skip straight past it.
+		lineStart, lineEnd := lineBoundsAround(data, hit)
+		line := data[lineStart:lineEnd]
+		if re.checkExtras(line, hit-lineStart+len(pf.primary)) {
+			var m [2]int
+			switch re.engineType {
+			case engineDFA:
+				m = re.searchDFA.findIndex(line)
+			default:
+				m = re.vm.findIndex(line)
+			}
+			if m[0] >= 0 {
+				return [2]int{lineStart + m[0], lineStart + m[1]}
+			}
 		}
-		if match[0] >= 0 {
-			return [2]int{lineStart + match[0], lineStart + match[1]}
-		}
+		pos = lineEnd + 1
 	}
-
-	return [2]int{-1, -1}
 }
 
 func (re *Regexp) findIndexRareByte(data []byte) [2]int {
 	rb := re.prefilter.rareByte
-	offsets := simd.IndexAll(data, []byte{rb})
-	for _, off := range offsets {
-		lineStart := 0
-		if off > 0 {
-			if i := bytes.LastIndexByte(data[:off], '\n'); i >= 0 {
-				lineStart = i + 1
-			}
+	pos := 0
+	for pos < len(data) {
+		idx := bytes.IndexByte(data[pos:], rb)
+		if idx < 0 {
+			break
 		}
-		lineEnd := len(data)
-		if i := bytes.IndexByte(data[off:], '\n'); i >= 0 {
-			lineEnd = off + i
-		}
+		off := pos + idx
+		left, right := re.rareByteWindow(data, off)
 
-		line := data[lineStart:lineEnd]
-		var match [2]int
+		window := data[left:right]
+		var m [2]int
 		switch re.engineType {
 		case engineDFA:
-			match = re.searchDFA.findIndex(line)
+			m = re.searchDFA.findIndex(window)
 		default:
-			match = re.vm.findIndex(line)
+			m = re.vm.findIndex(window)
 		}
-		if match[0] >= 0 {
-			return [2]int{lineStart + match[0], lineStart + match[1]}
+		if m[0] >= 0 {
+			return [2]int{left + m[0], left + m[1]}
 		}
+		pos = right
 	}
 	return [2]int{-1, -1}
 }
 
 func (re *Regexp) findAllIndexRareByte(data []byte, n int) [][2]int {
-	rb := re.prefilter.rareByte
-	offsets := simd.IndexAll(data, []byte{rb})
-	if len(offsets) == 0 {
-		return nil
-	}
-
 	var results [][2]int
-	lastLineEnd := -1
+	re.findAllIndexRareByteFunc(data, func(s, e int) bool {
+		results = append(results, [2]int{s, e})
+		return n < 0 || len(results) < n
+	})
+	return results
+}
 
-	for _, off := range offsets {
-		if n >= 0 && len(results) >= n {
+func (re *Regexp) findAllIndexRareByteFunc(data []byte, yield func(s, e int) bool) {
+	rb := re.prefilter.rareByte
+	pos := 0
+
+	for pos < len(data) {
+		idx := bytes.IndexByte(data[pos:], rb)
+		if idx < 0 {
 			break
 		}
-		lineStart := 0
-		if off > 0 {
-			if i := bytes.LastIndexByte(data[:off], '\n'); i >= 0 {
-				lineStart = i + 1
-			}
-		}
-		if lineStart <= lastLineEnd {
-			continue
-		}
-		lineEnd := len(data)
-		if i := bytes.IndexByte(data[off:], '\n'); i >= 0 {
-			lineEnd = off + i
-		}
-		lastLineEnd = lineEnd
+		off := pos + idx
+		left, right := re.rareByteWindow(data, off)
 
-		line := data[lineStart:lineEnd]
+		window := data[left:right]
 		var lineLocs [][2]int
 		switch re.engineType {
 		case engineDFA:
-			lineLocs = re.searchDFA.findAllIndex(line, -1)
+			lineLocs = re.searchDFA.findAllIndex(window, -1)
 		default:
-			lineLocs = re.vm.findAllIndex(line, -1)
+			lineLocs = re.vm.findAllIndex(window, -1)
 		}
 		for _, loc := range lineLocs {
-			if n >= 0 && len(results) >= n {
-				break
+			if !yield(left+loc[0], left+loc[1]) {
+				return
 			}
-			results = append(results, [2]int{lineStart + loc[0], lineStart + loc[1]})
 		}
+		// Every match overlapping this allowed-byte run has been found;
+		// resume the rare-byte scan just past it (later hits on the same
+		// line get their own runs).
+		pos = right
 	}
-	return results
 }
 
 func (re *Regexp) findAllIndexPrefiltered(data []byte, n int) [][2]int {
@@ -555,67 +640,76 @@ func (re *Regexp) findAllIndexPrefiltered(data []byte, n int) [][2]int {
 		return re.findAllIndexRareByte(data, n)
 	}
 
-	var offsets []int
-	if pf.primaryCI {
-		offsets = simd.IndexAllCaseInsensitive(data, pf.primary)
-	} else {
-		offsets = simd.IndexAll(data, pf.primary)
-	}
-
-	if len(offsets) == 0 {
-		return nil
+	if pf.primaryIsPrefix && re.engineType == engineDFA {
+		var results [][2]int
+		re.findAllIndexPrefixLitFunc(data, func(s, e int) bool {
+			results = append(results, [2]int{s, e})
+			return n < 0 || len(results) < n
+		})
+		return results
 	}
 
 	var results [][2]int
-	lastLineEnd := -1
+	re.findAllIndexPrefilteredFunc(data, func(s, e int) bool {
+		results = append(results, [2]int{s, e})
+		return n < 0 || len(results) < n
+	})
+	return results
+}
 
-	for _, off := range offsets {
-		if n >= 0 && len(results) >= n {
-			break
+// findAllIndexPrefilteredFunc is the mid-pattern-literal streaming core:
+// SIMD-scan for the literal, verify the containing line, yield its matches.
+func (re *Regexp) findAllIndexPrefilteredFunc(data []byte, yield func(s, e int) bool) {
+	pf := re.prefilter
+	pos := 0
+	for {
+		hit := re.nextPrimary(data, pos)
+		if hit < 0 {
+			return
 		}
 
-		lineStart := 0
-		if off > 0 {
-			if i := bytes.LastIndexByte(data[:off], '\n'); i >= 0 {
-				lineStart = i + 1
-			}
-		}
-
-		// Dedup by line
-		if lineStart <= lastLineEnd {
-			continue
-		}
-
-		lineEnd := len(data)
-		if i := bytes.IndexByte(data[off:], '\n'); i >= 0 {
-			lineEnd = off + i
-		}
-		lastLineEnd = lineEnd
-
+		lineStart, lineEnd := lineBoundsAround(data, hit)
 		line := data[lineStart:lineEnd]
-		posInLine := off - lineStart + len(pf.primary)
-		if !re.checkExtras(line, posInLine) {
-			continue
-		}
-
-		// Find all matches on this line
-		var lineLocs [][2]int
-		switch re.engineType {
-		case engineDFA:
-			lineLocs = re.searchDFA.findAllIndex(line, -1)
-		default:
-			lineLocs = re.vm.findAllIndex(line, -1)
-		}
-
-		for _, loc := range lineLocs {
-			if n >= 0 && len(results) >= n {
-				break
+		if re.checkExtras(line, hit-lineStart+len(pf.primary)) {
+			var lineLocs [][2]int
+			switch re.engineType {
+			case engineDFA:
+				lineLocs = re.searchDFA.findAllIndex(line, -1)
+			default:
+				lineLocs = re.vm.findAllIndex(line, -1)
 			}
-			results = append(results, [2]int{lineStart + loc[0], lineStart + loc[1]})
+			for _, loc := range lineLocs {
+				if !yield(lineStart+loc[0], lineStart+loc[1]) {
+					return
+				}
+			}
+		}
+		pos = lineEnd + 1
+	}
+}
+
+// findAllIndexPrefixLitFunc handles patterns whose every match begins with
+// the primary literal: SIMD-scan for the literal and run the DFA anchored at
+// each hit. No line extraction, no per-start-byte rescanning.
+func (re *Regexp) findAllIndexPrefixLitFunc(data []byte, yield func(s, e int) bool) {
+	pos := 0
+	for {
+		hit := re.nextPrimary(data, pos)
+		if hit < 0 {
+			return
+		}
+		if m := re.searchDFA.tryMatchAt(data, hit); m[0] >= 0 {
+			if !yield(m[0], m[1]) {
+				return
+			}
+			pos = m[1]
+			if pos == hit { // zero-width safety; cannot happen with a literal
+				pos++
+			}
+		} else {
+			pos = hit + 1
 		}
 	}
-
-	return results
 }
 
 func (re *Regexp) checkExtras(line []byte, after int) bool {

@@ -449,6 +449,7 @@ type forwardDFA struct {
 	cacheLimit  int
 	startState  int32
 	startNFASet []int32
+	precomputed bool
 }
 
 const fwdMatchBit int32 = 1 << 30
@@ -481,6 +482,20 @@ func (fd *forwardDFA) match(data []byte) bool {
 	trans := fd.trans
 	ss256 := int(state) * 256
 
+	if fd.precomputed {
+		// Read-only fast path: every reachable transition exists, and the
+		// forward DFA has no dead state (misses map back to the start state),
+		// so the loop is a single load + compare per byte.
+		for _, b := range data {
+			next := trans[ss256+int(b)]
+			if next >= fwdMatchBit {
+				return true
+			}
+			ss256 = int(next) * 256
+		}
+		return false
+	}
+
 	for _, b := range data {
 		next := trans[ss256+int(b)]
 		if next < 0 {
@@ -493,10 +508,44 @@ func (fd *forwardDFA) match(data []byte) bool {
 		if next >= fwdMatchBit {
 			return true
 		}
-		state = next
+		state = next & fwdStateMask
 		ss256 = int(state) * 256
 	}
 	return false
+}
+
+// precomputeAll eagerly computes every transition reachable from the start
+// state. On success the DFA becomes immutable, making it safe for concurrent
+// use by multiple goroutines. Returns false on state-cache overflow.
+func (fd *forwardDFA) precomputeAll() bool {
+	classOf, reps := computeByteClasses(fd.nfa)
+	visited := make([]bool, fd.cacheLimit)
+	queue := make([]int32, 1, 64)
+	queue[0] = fd.startState
+	visited[fd.startState] = true
+
+	for qi := 0; qi < len(queue); qi++ {
+		state := queue[qi]
+		base := int(state) * 256
+		for _, rep := range reps {
+			if fd.trans[base+int(rep)] == dfaUncomputed {
+				if fd.computeTransition(state, rep) < 0 {
+					return false // cache overflow
+				}
+			}
+		}
+		for b := 0; b < 256; b++ {
+			val := fd.trans[base+int(reps[classOf[b]])]
+			fd.trans[base+b] = val
+			dest := val & fwdStateMask
+			if int(dest) < len(visited) && !visited[dest] {
+				visited[dest] = true
+				queue = append(queue, dest)
+			}
+		}
+	}
+	fd.precomputed = true
+	return true
 }
 
 func (fd *forwardDFA) computeTransition(stateIdx int32, b byte) int32 {
@@ -603,6 +652,79 @@ func (fd *forwardDFA) flush() {
 }
 
 // ---------------- shared helpers ----------------
+
+// computeByteClasses partitions the byte alphabet into equivalence classes:
+// bytes in the same class are indistinguishable to every consuming NFA state,
+// so they always produce identical DFA transitions. Precomputation then runs
+// the (expensive) epsilon-closure work once per class representative instead
+// of once per byte — typically ~5-20 classes instead of 256.
+func computeByteClasses(nfa *NFA) (classOf [256]int32, reps []byte) {
+	var boundary [257]bool
+	boundary[0] = true
+	mark := func(lo, hi byte) {
+		boundary[lo] = true
+		boundary[int(hi)+1] = true
+	}
+	for i := range nfa.States {
+		s := &nfa.States[i]
+		switch s.Op {
+		case OpByte:
+			mark(s.ByteVal, s.ByteVal)
+		case OpByteRange:
+			mark(s.Lo, s.Hi)
+		case OpByteRanges:
+			for _, r := range s.Ranges {
+				mark(r.Lo, r.Hi)
+			}
+		case OpAny:
+			mark('\n', '\n')
+		}
+	}
+	cls := int32(-1)
+	for b := 0; b < 256; b++ {
+		if boundary[b] {
+			cls++
+			reps = append(reps, byte(b))
+		}
+		classOf[b] = cls
+	}
+	return classOf, reps
+}
+
+// computeAllowedBytes returns the set of bytes consumable by any NFA state.
+// Every byte inside any match is consumed by some transition, so a byte
+// outside this set can never appear within a match. The rare-byte prefilter
+// uses this to bound how far left of a hit a match could begin.
+func computeAllowedBytes(nfa *NFA) (allowed [256]bool) {
+	for i := range nfa.States {
+		s := &nfa.States[i]
+		switch s.Op {
+		case OpByte:
+			allowed[s.ByteVal] = true
+		case OpByteRange:
+			for b := int(s.Lo); b <= int(s.Hi); b++ {
+				allowed[b] = true
+			}
+		case OpByteRanges:
+			for _, r := range s.Ranges {
+				for b := int(r.Lo); b <= int(r.Hi); b++ {
+					allowed[b] = true
+				}
+			}
+		case OpAny:
+			for b := 0; b < 256; b++ {
+				if b != '\n' {
+					allowed[b] = true
+				}
+			}
+		case OpAnyByte:
+			for b := 0; b < 256; b++ {
+				allowed[b] = true
+			}
+		}
+	}
+	return allowed
+}
 
 func byteMatchesState(s *State, b byte) bool {
 	switch s.Op {

@@ -5,6 +5,7 @@ package regex
 // for any reachable state. This allows the inner loop to use `next <= 0`
 // as a combined dead+uncomputed check (since uncomputed never occurs).
 func (dfa *searchDFA) precomputeAll() bool {
+	classOf, reps := computeByteClasses(dfa.nfa)
 	visited := make([]bool, dfa.cacheLimit)
 	queue := make([]int32, 1, 64)
 	queue[0] = dfa.startState
@@ -12,16 +13,21 @@ func (dfa *searchDFA) precomputeAll() bool {
 
 	for qi := 0; qi < len(queue); qi++ {
 		state := queue[qi]
+		base := int(state) * 256
 
-		for b := 0; b < 256; b++ {
-			off := int(state)*256 + b
-			if dfa.trans[off] == dfaUncomputed {
-				next := dfa.computeTransition(state, byte(b))
-				if next < 0 {
+		// Compute one transition per byte class, then fan the value out to
+		// every byte in the class (bytes in a class are indistinguishable
+		// to all NFA states, so their transitions are identical).
+		for _, rep := range reps {
+			if dfa.trans[base+int(rep)] == dfaUncomputed {
+				if dfa.computeTransition(state, rep) < 0 {
 					return false // cache overflow
 				}
 			}
-			val := dfa.trans[int(state)*256+b]
+		}
+		for b := 0; b < 256; b++ {
+			val := dfa.trans[base+int(reps[classOf[b]])]
+			dfa.trans[base+b] = val
 			destState := val & sStateMask
 			if destState != dfaDeadState && int(destState) < len(visited) && !visited[destState] {
 				visited[destState] = true
@@ -43,16 +49,54 @@ func (dfa *searchDFA) findAllIndexFast(data []byte, n int) [][2]int {
 	if dfa.nfa.Flags&FlagAnchored != 0 || dfa.startIsMatch {
 		return dfa.findAllIndexSlow(data, n)
 	}
-
-	// For small data (per-line calls from prefilter path), skip batch overhead.
 	if len(data) < 4096 {
 		return dfa.findAllIndexSafe(data, n)
 	}
 
+	estMatches := len(data)/300 + 64
+	if n >= 0 && n < estMatches {
+		estMatches = n
+	}
+	results := make([][2]int, 0, estMatches)
+	dfa.findAllIndexFastFunc(data, func(s, e int) bool {
+		results = append(results, [2]int{s, e})
+		return n < 0 || len(results) < n
+	})
+	return results
+}
+
+// findAllIndexFunc streams matches to yield in order (yield false = stop).
+func (dfa *searchDFA) findAllIndexFunc(data []byte, yield func(s, e int) bool) {
+	if dfa.nfa.Flags&FlagAnchored != 0 || dfa.startIsMatch || len(data) < 4096 {
+		// Rare/small paths: collect then replay.
+		var locs [][2]int
+		if dfa.nfa.Flags&FlagAnchored != 0 || dfa.startIsMatch {
+			locs = dfa.findAllIndexSlow(data, -1)
+		} else {
+			locs = dfa.findAllIndexSafe(data, -1)
+		}
+		for _, loc := range locs {
+			if !yield(loc[0], loc[1]) {
+				return
+			}
+		}
+		return
+	}
+	dfa.findAllIndexFastFunc(data, yield)
+}
+
+// findAllIndexFastFunc is the batch-SIMD + precomputed-DFA streaming core.
+// Requires: not anchored, start not matching, len(data) >= 4096.
+func (dfa *searchDFA) findAllIndexFastFunc(data []byte, yield func(s, e int) bool) {
 	dfa.warmStart()
 	if !dfa.precomputed {
 		if !dfa.precomputeAll() {
-			return dfa.findAllIndexSafe(data, n)
+			for _, loc := range dfa.findAllIndexSafe(data, -1) {
+				if !yield(loc[0], loc[1]) {
+					return
+				}
+			}
+			return
 		}
 		dfa.precomputed = true
 	}
@@ -61,25 +105,19 @@ func (dfa *searchDFA) findAllIndexFast(data []byte, n int) [][2]int {
 	trans := dfa.trans
 	dataLen := len(data)
 
-	estMatches := dataLen/300 + 64
-	if n >= 0 && n < estMatches {
-		estMatches = n
-	}
-	results := make([][2]int, 0, estMatches)
-
 	const batchSize = 4096
 	var candBuf [batchSize]int
 	ssBase := int(ss) * 256
 
 	pos := 0
-	for (n < 0 || len(results) < n) && pos < dataLen {
+	for pos < dataLen {
 		// Batch SIMD: collect up to 4096 candidate positions in one scan
 		nCand := dfa.batchNextCandidates(data, pos, dataLen, candBuf[:])
 		if nCand == 0 {
 			break
 		}
 
-		for ci := 0; ci < nCand && (n < 0 || len(results) < n); {
+		for ci := 0; ci < nCand; {
 			startPos := candBuf[ci]
 			if startPos < pos {
 				ci++
@@ -104,7 +142,9 @@ func (dfa *searchDFA) findAllIndexFast(data []byte, n int) [][2]int {
 			}
 
 			if lastMatch >= 0 {
-				results = append(results, [2]int{startPos, lastMatch})
+				if !yield(startPos, lastMatch) {
+					return
+				}
 				pos = lastMatch
 				ci++
 				// Skip candidates that fall within the match we just found
@@ -125,8 +165,6 @@ func (dfa *searchDFA) findAllIndexFast(data []byte, n int) [][2]int {
 			}
 		}
 	}
-
-	return results
 }
 
 // findAllIndexSafe is the non-optimized fallback (small data, cache overflow).

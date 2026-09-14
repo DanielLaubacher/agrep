@@ -18,6 +18,11 @@ type prefilter struct {
 	primary    []byte
 	primaryCI  bool // case-insensitive
 
+	// primaryIsPrefix reports that every match begins with primary. The
+	// search can then verify with the DFA anchored at each literal hit,
+	// skipping line extraction and per-start-byte rescanning entirely.
+	primaryIsPrefix bool
+
 	// extras are additional required literals verified after primary hits
 	extras   [][]byte
 	extrasCI []bool
@@ -79,6 +84,7 @@ func extractPrefilter(pattern string, flags syntax.Flags) *prefilter {
 	}
 	pf.primary = []byte(lit)
 	pf.primaryCI = isCI
+	pf.primaryIsPrefix = valid[0].atStart
 
 	// Remaining literals >= 4 bytes are extras
 	for _, c := range valid[1:] {
@@ -100,6 +106,7 @@ func extractPrefilter(pattern string, flags syntax.Flags) *prefilter {
 type litCandidate struct {
 	runes    []rune
 	foldCase bool
+	atStart  bool // literal begins every match (candidate starts the pattern)
 }
 
 func extractLiteralsFromAST(re *syntax.Regexp) []litCandidate {
@@ -111,6 +118,7 @@ func extractLiteralsFromAST(re *syntax.Regexp) []litCandidate {
 		return []litCandidate{{
 			runes:    re.Rune,
 			foldCase: re.Flags&syntax.FoldCase != 0,
+			atStart:  true,
 		}}
 
 	case syntax.OpConcat:
@@ -147,27 +155,40 @@ func extractFromConcatAST(subs []*syntax.Regexp) []litCandidate {
 
 	var currentRunes []rune
 	var currentFold bool
+	var currentAtStart bool
 	flush := func() {
 		if len(currentRunes) > 0 {
 			results = append(results, litCandidate{
 				runes:    currentRunes,
 				foldCase: currentFold,
+				atStart:  currentAtStart,
 			})
 			currentRunes = nil
 		}
 	}
 
-	for _, sub := range subs {
+	for elem, sub := range subs {
 		if sub.Op == syntax.OpLiteral && len(sub.Rune) > 0 {
 			fc := sub.Flags&syntax.FoldCase != 0
 			if len(currentRunes) > 0 && fc != currentFold {
 				flush()
 			}
+			if len(currentRunes) == 0 {
+				currentAtStart = elem == 0
+			}
 			currentFold = fc
 			currentRunes = append(currentRunes, sub.Rune...)
 		} else {
 			flush()
-			results = append(results, extractLiteralsFromAST(sub)...)
+			children := extractLiteralsFromAST(sub)
+			// A candidate only starts the whole concat if it starts the
+			// first element of the concat.
+			if elem != 0 {
+				for i := range children {
+					children[i].atStart = false
+				}
+			}
+			results = append(results, children...)
 		}
 	}
 	flush()

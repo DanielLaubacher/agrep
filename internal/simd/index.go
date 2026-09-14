@@ -118,6 +118,61 @@ func indexAllByte(data []byte, c byte) []int {
 	return result
 }
 
+// byteFreq scores how common a (case-folded) byte is in typical text and
+// source code. Higher = more common = worse prefilter byte.
+var byteFreq = func() [256]uint8 {
+	var f [256]uint8
+	for i := range f {
+		f[i] = 16 // uncommon by default (punctuation, control, high bytes)
+	}
+	// Approximate English/code letter frequencies (both cases share a score
+	// since the case-insensitive scan tests both variants).
+	freqs := map[byte]uint8{
+		'e': 255, 't': 220, 'a': 210, 'o': 200, 'i': 195, 'n': 190,
+		's': 180, 'r': 175, 'h': 150, 'l': 140, 'd': 120, 'c': 110,
+		'u': 100, 'm': 90, 'f': 80, 'p': 75, 'g': 70, 'w': 60,
+		'y': 55, 'b': 50, 'v': 40, 'k': 30, 'x': 12, 'j': 10, 'q': 8, 'z': 8,
+		' ': 255, '\t': 200, '_': 90,
+	}
+	for b, v := range freqs {
+		f[b] = v
+	}
+	for b := byte('0'); b <= '9'; b++ {
+		f[b] = 100
+	}
+	return f
+}()
+
+// pickRarePair returns the two distinct pattern positions whose bytes are
+// rarest in typical data (minimizing the joint false-positive rate). The
+// SIMD prefilter tests these two positions; rarer bytes mean fewer
+// false-positive candidates to verify. Identical byte values are fine —
+// for "err" the pair (r,r) selects the rare "rr" bigram, far more selective
+// than the common "er".
+func pickRarePair(pattern []byte) (int, int) {
+	plen := len(pattern)
+	if plen == 1 {
+		return 0, 0
+	}
+	o1, o2 := 0, 1
+	if byteFreq[pattern[1]] < byteFreq[pattern[0]] {
+		o1, o2 = 1, 0
+	}
+	for i := 2; i < plen; i++ {
+		f := byteFreq[pattern[i]]
+		if f < byteFreq[pattern[o1]] {
+			o2 = o1
+			o1 = i
+		} else if f < byteFreq[pattern[o2]] {
+			o2 = i
+		}
+	}
+	if o1 > o2 {
+		o1, o2 = o2, o1
+	}
+	return o1, o2
+}
+
 // IndexCaseInsensitive returns the index of the first case-insensitive occurrence of pattern in data.
 // Pattern must be pre-lowered. Only handles ASCII case folding.
 func IndexCaseInsensitive(data, patternLower []byte) int {
@@ -129,10 +184,15 @@ func IndexCaseInsensitive(data, patternLower []byte) int {
 		return -1
 	}
 
-	// For case-insensitive, we need to check both cases of first/last byte
-	firstLo := patternLower[0]
+	// Prefilter on the two RAREST pattern bytes (not first+last): for a
+	// pattern like "define", first+last is 'd'+'e' and 'e' is the most
+	// common letter in text — the rare pair ('f','d') cuts false-positive
+	// verifications by ~6x. Bit j in the mask still marks match START i+j
+	// because both loads are offset from the window base.
+	o1, o2 := pickRarePair(patternLower)
+	firstLo := patternLower[o1]
 	firstHi := toUpperASCII(firstLo)
-	lastLo := patternLower[plen-1]
+	lastLo := patternLower[o2]
 	lastHi := toUpperASCII(lastLo)
 
 	bFirstLo := archsimd.BroadcastUint8x32(firstLo)
@@ -144,8 +204,8 @@ func IndexCaseInsensitive(data, patternLower []byte) int {
 	limit := len(data) - plen + 1
 
 	for i+32 <= limit {
-		blockFirst := archsimd.LoadUint8x32Slice(data[i:])
-		blockLast := archsimd.LoadUint8x32Slice(data[i+plen-1:])
+		blockFirst := archsimd.LoadUint8x32Slice(data[i+o1:])
+		blockLast := archsimd.LoadUint8x32Slice(data[i+o2:])
 
 		mFirstLo := blockFirst.Equal(bFirstLo)
 		mFirstHi := blockFirst.Equal(bFirstHi)
@@ -188,9 +248,11 @@ func IndexAllCaseInsensitive(data, patternLower []byte) []int {
 		return nil
 	}
 
-	firstLo := patternLower[0]
+	// Rare-pair prefilter — see IndexCaseInsensitive for rationale.
+	o1, o2 := pickRarePair(patternLower)
+	firstLo := patternLower[o1]
 	firstHi := toUpperASCII(firstLo)
-	lastLo := patternLower[plen-1]
+	lastLo := patternLower[o2]
 	lastHi := toUpperASCII(lastLo)
 
 	bFirstLo := archsimd.BroadcastUint8x32(firstLo)
@@ -205,8 +267,8 @@ func IndexAllCaseInsensitive(data, patternLower []byte) []int {
 	limit := len(data) - plen + 1
 
 	for i+32 <= limit {
-		blockFirst := archsimd.LoadUint8x32Slice(data[i:])
-		blockLast := archsimd.LoadUint8x32Slice(data[i+plen-1:])
+		blockFirst := archsimd.LoadUint8x32Slice(data[i+o1:])
+		blockLast := archsimd.LoadUint8x32Slice(data[i+o2:])
 
 		mFirst := blockFirst.Equal(bFirstLo).Or(blockFirst.Equal(bFirstHi))
 		mLast := blockLast.Equal(bLastLo).Or(blockLast.Equal(bLastHi))
