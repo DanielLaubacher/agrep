@@ -60,10 +60,7 @@ func NewMatcher(patterns []string, fixed bool, usePCRE bool, ignoreCase bool, in
 			m.needLineNums = opts.NeedLineNums
 			return m, nil
 		}
-		m := NewAhoCorasickMatcher(patterns, ignoreCase, invert)
-		m.maxCols = opts.MaxCols
-		m.needLineNums = opts.NeedLineNums
-		return m, nil
+		return newMultiLiteralMatcher(patterns, ignoreCase, invert, opts), nil
 	}
 
 	// Optimization: if all patterns are literal strings (no regex metacharacters),
@@ -82,10 +79,7 @@ func NewMatcher(patterns []string, fixed bool, usePCRE bool, ignoreCase bool, in
 			m.needLineNums = opts.NeedLineNums
 			return m, nil
 		}
-		m := NewAhoCorasickMatcher(patterns, ignoreCase, invert)
-		m.maxCols = opts.MaxCols
-		m.needLineNums = opts.NeedLineNums
-		return m, nil
+		return newMultiLiteralMatcher(patterns, ignoreCase, invert, opts), nil
 	}
 
 	// Regex mode: combine multiple patterns with |
@@ -111,10 +105,7 @@ func NewMatcher(patterns []string, fixed bool, usePCRE bool, ignoreCase bool, in
 			m.needLineNums = opts.NeedLineNums
 			return m, nil
 		}
-		m := NewAhoCorasickMatcher(alts, ignoreCase, invert)
-		m.maxCols = opts.MaxCols
-		m.needLineNums = opts.NeedLineNums
-		return m, nil
+		return newMultiLiteralMatcher(alts, ignoreCase, invert, opts), nil
 	}
 
 	// Use FastRegexMatcher (lazy DFA engine) for better performance
@@ -146,6 +137,32 @@ func NewMatcherFromPipelines(pipelines [][]StageConfig, ignoreCase bool, invert 
 	if len(pipelines) == 1 && len(pipelines[0]) == 1 && !pipelines[0][0].OnlyMatch {
 		s := pipelines[0][0]
 		return NewMatcher([]string{s.Pattern}, s.Fixed, s.PCRE, ignoreCase, invert, opts)
+	}
+
+	// Fast path: N single-stage pipelines with identical engine flags and no
+	// -o are plain OR'd patterns (`-e a -e b -e c`) — run them as ONE
+	// multi-pattern matcher (Teddy/Aho-Corasick for fixed sets) instead of
+	// N separate full scans OR'd afterwards. This is also required for
+	// correct -v semantics: invert must apply to the OR of the patterns,
+	// not per pattern.
+	// (-F is per-stage and resets after each -e, so require each pattern to
+	// be either explicitly fixed or literal — then all are fixed strings.)
+	if len(pipelines) > 1 {
+		combinable := true
+		for _, pl := range pipelines {
+			if len(pl) != 1 || pl[0].OnlyMatch || pl[0].PCRE ||
+				(!pl[0].Fixed && !isLiteral(pl[0].Pattern)) {
+				combinable = false
+				break
+			}
+		}
+		if combinable {
+			patterns := make([]string, len(pipelines))
+			for i, pl := range pipelines {
+				patterns[i] = pl[0].Pattern
+			}
+			return NewMatcher(patterns, true, false, ignoreCase, invert, opts)
+		}
 	}
 
 	var pipelineMatchers []*PipelineMatcher
@@ -200,6 +217,22 @@ func buildPipeline(stages []StageConfig, ignoreCase bool, invert bool, opts Matc
 	// The final stage's -o flag determines output mode
 	onlyMatch := stages[len(stages)-1].OnlyMatch
 	return NewPipelineMatcher(matchers, onlyMatch), nil
+}
+
+
+// newMultiLiteralMatcher picks the best engine for a set of fixed patterns:
+// rare-pair Teddy (SIMD, 2-8 patterns) when applicable, Aho-Corasick
+// otherwise.
+func newMultiLiteralMatcher(patterns []string, ignoreCase bool, invert bool, opts MatcherOpts) Matcher {
+	if tm := NewTeddyMatcher(patterns, ignoreCase, invert); tm != nil {
+		tm.maxCols = opts.MaxCols
+		tm.needLineNums = opts.NeedLineNums
+		return tm
+	}
+	m := NewAhoCorasickMatcher(patterns, ignoreCase, invert)
+	m.maxCols = opts.MaxCols
+	m.needLineNums = opts.NeedLineNums
+	return m
 }
 
 // isLiteral returns true if the pattern contains no regex metacharacters
