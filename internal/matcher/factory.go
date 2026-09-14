@@ -4,13 +4,17 @@ import (
 	"fmt"
 	"regexp/syntax"
 	"strings"
+
+	"github.com/DanielLaubacher/agrep/internal/lang"
 )
 
 // MatcherOpts holds display-related options that affect match extraction.
 type MatcherOpts struct {
-	MaxCols      int  // max columns for snippet extraction (0 = full lines)
-	NeedLineNums bool // compute line numbers (false = skip for speed)
-	Multiline    bool // -U: patterns may match across line boundaries
+	MaxCols      int       // max columns for snippet extraction (0 = full lines)
+	NeedLineNums bool      // compute line numbers (false = skip for speed)
+	Multiline    bool      // -U: patterns may match across line boundaries
+	Structural   bool      // -S: pattern is a structural template with :[name] holes
+	Lang         lang.Lang // --lang: language family for -S string/comment atoms
 }
 
 // StageConfig describes one stage in a match pipeline.
@@ -30,6 +34,15 @@ type StageConfig struct {
 func NewMatcher(patterns []string, fixed bool, usePCRE bool, ignoreCase bool, invert bool, opts MatcherOpts) (Matcher, error) {
 	if len(patterns) == 0 {
 		return nil, fmt.Errorf("no patterns provided")
+	}
+
+	// -S routes to the structural-template matcher. Config validation
+	// rejects unsupported combinations before we get here.
+	if opts.Structural {
+		if usePCRE || invert || fixed || len(patterns) != 1 {
+			return nil, fmt.Errorf("--structural takes a single template (no -F/-P/-v)")
+		}
+		return NewStructuralMatcher(patterns[0], opts.Lang, opts)
 	}
 
 	// -U routes to the dedicated cross-line matcher (RE2 on the whole

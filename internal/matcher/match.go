@@ -15,16 +15,26 @@ type Match struct {
 	ByteOffset int64 // byte offset of line start within the original file
 	PosIdx     int   // start index into MatchSet.Positions
 	PosCount   int   // number of highlight positions for this match
+	CapIdx     int   // start index into MatchSet.Captures (-S holes)
+	CapCount   int   // number of captures for this match
 	IsContext  bool
+}
+
+// Capture is one structural hole binding: the text Data[Start:End)
+// matched by :[Name] (offsets are absolute within MatchSet.Data).
+type Capture struct {
+	Name       string
+	Start, End int
 }
 
 // MatchSet holds matches and the shared backing data they reference.
 // Only MatchSet contains pointer types — individual Match structs are pointer-free,
 // so the GC scans O(1) pointers regardless of match count.
 type MatchSet struct {
-	Data      []byte   // the file data buffer (matches reference offsets into this)
-	Matches   []Match  // pointer-free match structs
-	Positions [][2]int // shared positions array; each match indexes a sub-range
+	Data      []byte    // the file data buffer (matches reference offsets into this)
+	Matches   []Match   // pointer-free match structs
+	Positions [][2]int  // shared positions array; each match indexes a sub-range
+	Captures  []Capture // shared hole-capture array (-S); indexed like Positions
 }
 
 // Len returns the number of matches.
@@ -45,6 +55,15 @@ func (ms *MatchSet) MatchPositions(i int) [][2]int {
 		return nil
 	}
 	return ms.Positions[m.PosIdx : m.PosIdx+m.PosCount]
+}
+
+// MatchCaptures returns the hole captures for match at index i.
+func (ms *MatchSet) MatchCaptures(i int) []Capture {
+	m := &ms.Matches[i]
+	if m.CapCount == 0 {
+		return nil
+	}
+	return ms.Captures[m.CapIdx : m.CapIdx+m.CapCount]
 }
 
 // HasMatch returns true if the set contains at least one match.
@@ -71,5 +90,5 @@ type Matcher interface {
 // WithMatches returns a copy of the set sharing Data and Positions but
 // holding only the given matches (used by output-side filtering).
 func (ms *MatchSet) WithMatches(matches []Match) MatchSet {
-	return MatchSet{Data: ms.Data, Matches: matches, Positions: ms.Positions}
+	return MatchSet{Data: ms.Data, Matches: matches, Positions: ms.Positions, Captures: ms.Captures}
 }

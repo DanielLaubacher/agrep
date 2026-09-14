@@ -34,6 +34,14 @@ Options:
   -M, --max-columns NUM    Truncate lines longer than NUM bytes (0=auto, -1=no limit)
   -U, --multiline          Patterns may match across lines; output spans the
                            whole matched block (regex only; ^ $ match per line)
+      --structural         PATTERN is a structural template with :[name] holes
+                           matching lazily within balanced delimiters
+      --lang NAME          Language family for -S string/comment handling
+                           (go py js c rs sh rb md; default: generic)
+      --capture NAME       With -S --histogram: aggregate the named hole's
+                           captured text instead of full matches
+      --block              Emit each match's whole enclosing definition block
+                           (function/class body; Markdown section)
       --color MODE         Use color: always, never, auto (default: auto)
       --colour MODE        Alias for --color
   -g, --glob PATTERN       Include/exclude files by glob (prefix ! to exclude)
@@ -228,6 +236,22 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			cfg.WatchMode = true
 		case "-U", "--multiline":
 			cfg.Multiline = true
+		case "--structural":
+			cfg.Structural = true
+		case "--lang":
+			v, ok := nextVal()
+			if !ok {
+				die("flag %s requires a value", key)
+			}
+			cfg.Lang = v
+		case "--capture":
+			v, ok := nextVal()
+			if !ok {
+				die("flag %s requires a value", key)
+			}
+			cfg.Capture = v
+		case "--block":
+			cfg.Block = true
 		case "-h", "--help":
 			showHelp = true
 		case "--skill":

@@ -47,7 +47,10 @@ type jsonMatch struct {
 	Region  string    `json:"region,omitempty"`
 	Section string    `json:"section,omitempty"`
 	Scope   string    `json:"scope,omitempty"`
-	Query   string    `json:"query,omitempty"`
+	// Captures holds structural hole bindings (-S): hole name → matched
+	// text. Anonymous :[_] holes are omitted.
+	Captures map[string]string `json:"captures,omitempty"`
+	Query    string            `json:"query,omitempty"`
 }
 
 type jsonPos struct {
@@ -167,6 +170,14 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 		if f.Scope {
 			if s := enclosingScope(ms.Data, m.LineStart, result.FilePath); s != nil {
 				jm.Scope = string(s)
+			}
+		}
+		if caps := ms.MatchCaptures(i); len(caps) > 0 {
+			jm.Captures = make(map[string]string, len(caps))
+			for _, c := range caps {
+				if c.Name != "_" {
+					jm.Captures[c.Name] = string(ms.Data[c.Start:c.End])
+				}
 			}
 		}
 		emitted++

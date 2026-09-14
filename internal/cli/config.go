@@ -62,7 +62,11 @@ type Config struct {
 	Histogram bool   // --histogram: distinct matched texts with counts
 	Rank      string // --rank: outline order — "count" (default) or "density"
 	Collapse  bool   // --collapse: suppress repeats of identical match lines
-	Multiline bool   // -U/--multiline: patterns may match across lines
+	Multiline  bool   // -U/--multiline: patterns may match across lines
+	Structural bool   // -S/--structural: pattern is a template with :[name] holes
+	Lang       string // --lang: language family for -S (default: generic)
+	Capture    string // --capture: hole name for --histogram aggregation
+	Block      bool   // --block: emit the whole enclosing definition block
 	TopK      int    // --top: limit outline/histogram to the K busiest entries
 	Sections  bool   // --sections: annotate matches with Markdown headings
 	Scope     bool   // --scope: annotate matches with the enclosing definition
@@ -170,6 +174,27 @@ func (c *Config) Validate() error {
 				}
 			}
 		}
+	}
+	if c.Structural {
+		if c.PCRE || c.Invert || c.WatchMode || c.Multiline || c.Ident || c.Fixed {
+			return fmt.Errorf("--structural cannot combine with -F, -P, -v, -U, --ident, or --watch")
+		}
+		if c.ContextBefore > 0 || c.ContextAfter > 0 {
+			return fmt.Errorf("--structural cannot combine with context lines")
+		}
+		if len(c.Pipelines) > 1 || (len(c.Pipelines) == 1 && len(c.Pipelines[0]) > 1) {
+			return fmt.Errorf("--structural takes a single template")
+		}
+		for _, pipeline := range c.Pipelines {
+			for _, stage := range pipeline {
+				if stage.Fixed || stage.PCRE {
+					return fmt.Errorf("--structural cannot combine with -F or -P")
+				}
+			}
+		}
+	}
+	if c.Capture != "" && !(c.Structural && c.Histogram) {
+		return fmt.Errorf("--capture requires --structural and --histogram")
 	}
 	return nil
 }

@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/DanielLaubacher/agrep/internal/input"
+	"github.com/DanielLaubacher/agrep/internal/lang"
 	"github.com/DanielLaubacher/agrep/internal/matcher"
 	"github.com/DanielLaubacher/agrep/internal/output"
 	"github.com/DanielLaubacher/agrep/internal/scheduler"
@@ -92,9 +93,9 @@ func Run(cfg Config) int {
 	}
 
 	maxCols := effectiveMaxCols(cfg)
-	// Multiline blocks must not be column-truncated unless the user
-	// explicitly asked for a limit.
-	if cfg.Multiline && cfg.MaxColumns == 0 {
+	// Multiline and structural blocks must not be column-truncated
+	// unless the user explicitly asked for a limit.
+	if (cfg.Multiline || cfg.Structural) && cfg.MaxColumns == 0 {
 		maxCols = 0
 	}
 
@@ -103,6 +104,8 @@ func Run(cfg Config) int {
 		// JSON consumers (agents) always need real line numbers.
 		NeedLineNums: cfg.LineNumbers || cfg.JSONOutput,
 		Multiline:    cfg.Multiline,
+		Structural:   cfg.Structural,
+		Lang:         lang.ByName(cfg.Lang),
 	}
 	// Histogram counts matched spans — never truncate the lines they
 	// live in.
@@ -319,7 +322,7 @@ func runRecursive(paths []string, m matcher.Matcher, reader input.Reader, format
 	// sweep-dirty) instead of walking. Falls back to fileSource
 	// (--files-from list or cold walk) whenever the index doesn't apply.
 	var fileCh <-chan walker.FileEntry
-	if cfg.UseIndex && cfg.FilesFrom == "" && len(paths) == 1 {
+	if cfg.UseIndex && !cfg.Structural && cfg.FilesFrom == "" && len(paths) == 1 {
 		if ch, ok := indexedFileChannel(cfg, paths[0]); ok {
 			fileCh = ch
 		}
