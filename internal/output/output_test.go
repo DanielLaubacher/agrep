@@ -120,8 +120,9 @@ func TestTextFormatter_MaxColumns(t *testing.T) {
 
 	got := string(f.Format(nil, result, false))
 	// Match at [0,4], center=2, window starts at 0; the right edge
-	// snaps back to the word boundary (no mid-word cut, no trailing space)
-	want := "1:short\n2:this is a very long\n"
+	// snaps back to the word boundary (no mid-word cut, no trailing
+	// space), and a "..." marks the cut so it never reads as a short line.
+	want := "1:short\n2:this is a very long...\n"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -145,8 +146,9 @@ func TestTextFormatter_MaxColumnsClipsPositions(t *testing.T) {
 
 	got := string(f.Format(nil, result, false))
 	// Window [3,13) with the right edge snapped to the word boundary
-	// after "world" — the trailing " a" fragment is dropped
-	want := "lo world\n"
+	// after "world" — the trailing " a" fragment is dropped, and both
+	// cut edges (window starts and ends mid-line) get a "..." marker.
+	want := "...lo world...\n"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -176,9 +178,10 @@ func TestTextFormatter_MaxColumnsCentered(t *testing.T) {
 	if !strings.Contains(got, "benchmark") {
 		t.Errorf("output %q does not contain match word 'benchmark'", got)
 	}
-	// Output line (minus newline) should be at most maxColumns
+	// Output line (minus newline) should be at most maxColumns, plus up
+	// to two 3-byte "..." truncation markers.
 	line2 := strings.TrimSuffix(got, "\n")
-	if len(line2) > 60 {
-		t.Errorf("output line length %d exceeds maxColumns 60", len(line2))
+	if len(line2) > 60+2*len("...") {
+		t.Errorf("output line length %d exceeds maxColumns 60 (plus markers)", len(line2))
 	}
 }

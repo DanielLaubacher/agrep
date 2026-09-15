@@ -127,11 +127,12 @@ normal outcome, not a failure — pair it with --suggest.
   ones injected by a ~/.agrep config file. If counts differ from
   grep, check for -S in the config file.
 - -M N truncates displayed lines to N bytes (0 = 75-byte default,
-  -1 = never), snapping to word boundaries. In JSON, an explicit
-  -M N windows only "text" (with "truncated":true) — "span",
-  "region", and all totals stay line-accurate, so survey with
-  '-M 150 --compact' and cite from the region. Without -M, JSON
-  text is always the full line.
+  -1 = never), snapping to word boundaries; a "..." marks each cut
+  edge, so a truncated line is never mistaken for a genuinely short
+  one. In JSON, an explicit -M N windows only "text" (with
+  "truncated":true) — "span", "region", and all totals stay
+  line-accurate, so survey with '-M 150 --compact' and cite from the
+  region. Without -M, JSON text is always the full line.
 
 ## Scoping the corpus
 

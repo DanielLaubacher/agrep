@@ -184,37 +184,31 @@ func (f *TextFormatter) formatMatch(buf []byte, filePath string, query string, m
 		}
 	}
 
-	// Truncate line content if needed, centering around the first match
+	// Truncate line content if needed, centering around the first match.
+	// A cut edge gets a "..." marker — without one, a truncated line is
+	// silently indistinguishable from a genuinely short one (the same
+	// "truncation must never read as absence" principle --max-tokens and
+	// --block already follow).
+	truncatedLeft, truncatedRight := false, false
 	if f.maxColumns > 0 && len(lineBytes) > f.maxColumns {
 		winStart, winEnd := truncateWindow(lineBytes, positions, f.maxColumns)
+		truncatedLeft = winStart > 0
+		truncatedRight = winEnd < len(lineBytes)
 		lineBytes = lineBytes[winStart:winEnd]
-		// Shift positions into the window and clip
-		var clipped [][2]int
-		for _, pos := range positions {
-			s := pos[0] - winStart
-			e := pos[1] - winStart
-			if e <= 0 {
-				continue
-			}
-			if s >= len(lineBytes) {
-				break
-			}
-			if s < 0 {
-				s = 0
-			}
-			if e > len(lineBytes) {
-				e = len(lineBytes)
-			}
-			clipped = append(clipped, [2]int{s, e})
-		}
-		positions = clipped
+		positions = clipPositions(positions, winStart, winEnd)
 	}
 
 	// Line content with match highlighting
+	if truncatedLeft {
+		buf = append(buf, "..."...)
+	}
 	if f.useColor && len(positions) > 0 {
 		buf = f.highlightMatches(buf, lineBytes, positions)
 	} else {
 		buf = append(buf, lineBytes...)
+	}
+	if truncatedRight {
+		buf = append(buf, "..."...)
 	}
 	if m.Truncated {
 		buf = append(buf, "\n[agrep] block truncated at size cap"...)
