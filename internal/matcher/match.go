@@ -18,6 +18,7 @@ type Match struct {
 	CapIdx     int   // start index into MatchSet.Captures (-S holes)
 	CapCount   int   // number of captures for this match
 	IsContext  bool
+	Truncated  bool // snippet was cut (--block size cap); totals remain exact
 }
 
 // Capture is one structural hole binding: the text Data[Start:End)

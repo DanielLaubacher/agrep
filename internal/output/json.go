@@ -50,7 +50,10 @@ type jsonMatch struct {
 	// Captures holds structural hole bindings (-S): hole name → matched
 	// text. Anonymous :[_] holes are omitted.
 	Captures map[string]string `json:"captures,omitempty"`
-	Query    string            `json:"query,omitempty"`
+	// Truncated marks a --block snippet cut at the size cap; the span
+	// still covers exactly the emitted bytes.
+	Truncated bool   `json:"truncated,omitempty"`
+	Query     string `json:"query,omitempty"`
 }
 
 type jsonPos struct {
@@ -155,6 +158,7 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 			LineNum:    m.LineNum,
 			ByteOffset: m.ByteOffset,
 			Text:       string(ms.Data[m.LineStart : m.LineStart+m.LineLen]),
+			Truncated:  m.Truncated,
 			Query:      result.Query,
 		}
 

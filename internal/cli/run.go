@@ -93,9 +93,11 @@ func Run(cfg Config) int {
 	}
 
 	maxCols := effectiveMaxCols(cfg)
-	// Multiline and structural blocks must not be column-truncated
-	// unless the user explicitly asked for a limit.
-	if (cfg.Multiline || cfg.Structural) && cfg.MaxColumns == 0 {
+	// Multiline, structural, and block output must not be
+	// column-truncated unless the user explicitly asked for a limit
+	// (--block also needs true line starts from the matcher, not
+	// windowed snippets).
+	if (cfg.Multiline || cfg.Structural || cfg.Block) && cfg.MaxColumns == 0 {
 		maxCols = 0
 	}
 
@@ -191,6 +193,15 @@ func Run(cfg Config) int {
 		tf.Sections = cfg.Sections
 		tf.Scope = cfg.Scope
 		formatter = tf
+	}
+	// --block rewrites matches to their enclosing blocks; innermost so
+	// budget and collapse see what will actually be emitted.
+	if cfg.Block && !cfg.WatchMode {
+		if cfg.CountOnly || cfg.FileNamesOnly || cfg.ContextBefore > 0 || cfg.ContextAfter > 0 {
+			logWarn("--block ignored with -c, -l, or context lines")
+		} else {
+			formatter = output.NewBlockFormatter(formatter)
+		}
 	}
 	if cfg.MaxTokens > 0 {
 		formatter = output.NewBudgetFormatter(formatter, cfg.MaxTokens, cfg.JSONOutput)

@@ -210,6 +210,9 @@ func (f *TextFormatter) formatMatch(buf []byte, filePath string, query string, m
 	} else {
 		buf = append(buf, lineBytes...)
 	}
+	if m.Truncated {
+		buf = append(buf, "\n[agrep] block truncated at size cap"...)
+	}
 	buf = append(buf, '\n')
 	return buf
 }
