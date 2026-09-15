@@ -161,17 +161,18 @@ func loadFileList(from string) ([]string, error) {
 // dropped; tracked files bypass ignore rules deliberately (a tracked
 // file is searchable even when a .gitignore would hide it from walks).
 func changedFiles(ref string, paths []string, globs []string) ([]string, error) {
-	root, err := gitOutput("rev-parse", "--show-toplevel")
+	dir := gitContextDir(paths)
+	root, err := gitOutput(dir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return nil, fmt.Errorf("--changed-since: not in a git repository (%v)", err)
 	}
 	rootDir := strings.TrimRight(string(root), "\n")
 
-	diff, err := gitOutput("diff", "--name-only", "-z", ref, "--")
+	diff, err := gitOutput(dir, "diff", "--name-only", "-z", ref, "--")
 	if err != nil {
 		return nil, fmt.Errorf("--changed-since %s: %v", ref, err)
 	}
-	untracked, err := gitOutput("ls-files", "--others", "--exclude-standard", "-z")
+	untracked, err := gitOutput(dir, "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return nil, fmt.Errorf("--changed-since: %v", err)
 	}
@@ -225,9 +226,28 @@ func underAnyPath(file string, paths []string) bool {
 	return false
 }
 
-// gitOutput runs a git subcommand and returns its stdout.
-func gitOutput(args ...string) ([]byte, error) {
+// gitContextDir picks the directory --changed-since resolves the git repo
+// and diff from: the first search path (a file's parent directory, since
+// git needs a directory to run in), or "." with no path given. Using the
+// bare process cwd here — instead of the path actually being searched —
+// meant the repo and diff were silently resolved against whatever
+// directory agrep happened to be launched from, not the target being
+// searched (report bug: a git repo at $PWD masked the "not in a git
+// repository" error, or worse, silently diffed the wrong repo).
+func gitContextDir(paths []string) string {
+	if len(paths) == 0 {
+		return "."
+	}
+	if st, err := os.Stat(paths[0]); err == nil && !st.IsDir() {
+		return filepath.Dir(paths[0])
+	}
+	return paths[0]
+}
+
+// gitOutput runs a git subcommand in dir and returns its stdout.
+func gitOutput(dir string, args ...string) ([]byte, error) {
 	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
