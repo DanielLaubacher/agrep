@@ -36,11 +36,16 @@ type JSONFormatter struct {
 	suppressedLines int
 	// Last tallied (file, query) — consecutive Format calls for the same
 	// result (budget chunking) must count the file once.
-	lastFile  string
-	lastQuery string
+	lastChunk chunkKey
 	// Per-query totals for --batch, in first-seen order.
-	queryOrder  []string
-	queryTotals map[string]*[2]int // query -> {files, lines}
+	queries queryTally
+
+	// hasBudget and the budget* fields are set by SetBudgetTotals
+	// (--max-tokens): the exact shown/omitted breakdown, folded into
+	// this formatter's own summary record instead of a second one.
+	hasBudget                              bool
+	budgetShownLines, budgetShownFiles     int
+	budgetOmittedLines, budgetOmittedFiles int
 }
 
 // NewJSONFormatter creates a JSONFormatter.
@@ -106,21 +111,8 @@ type jsonPos struct {
 // zero is a finding, not an omission.
 func (f *JSONFormatter) RegisterQueries(queries []string) {
 	for _, q := range queries {
-		f.queryEntry(q)
+		f.queries.entry(q)
 	}
-}
-
-func (f *JSONFormatter) queryEntry(query string) *[2]int {
-	if f.queryTotals == nil {
-		f.queryTotals = make(map[string]*[2]int)
-	}
-	qt := f.queryTotals[query]
-	if qt == nil {
-		qt = &[2]int{}
-		f.queryTotals[query] = qt
-		f.queryOrder = append(f.queryOrder, query)
-	}
-	return qt
 }
 
 // AddSuppressedLines records lines that were found but suppressed
@@ -132,11 +124,29 @@ func (f *JSONFormatter) AddSuppressedLines(n int) {
 	f.suppressedLines += n
 }
 
+// SetBudgetTotals folds a --max-tokens shown/omitted breakdown into this
+// formatter's own summary record (report bug 1). Entirely-omitted
+// results never reach Format, so their files/lines are added here to
+// what this formatter already tallied from what it was actually asked
+// to emit; trueQueries (counted before any cut) replaces the per-query
+// totals this formatter accumulated on its own, which would otherwise
+// reflect only what was shown.
+func (f *JSONFormatter) SetBudgetTotals(shownLines, shownFiles, omittedLines, omittedFiles int, trueQueries *queryTally) {
+	f.hasBudget = true
+	f.budgetShownLines, f.budgetShownFiles = shownLines, shownFiles
+	f.budgetOmittedLines, f.budgetOmittedFiles = omittedLines, omittedFiles
+	f.files += omittedFiles
+	f.lines += omittedLines
+	if trueQueries != nil {
+		f.queries = *trueQueries
+	}
+}
+
 // tally records emitted totals (overall and per batch query). A file
 // split across consecutive calls (budget chunking) counts once.
 func (f *JSONFormatter) tally(file, query string, lines int) {
-	newFile := file != f.lastFile || query != f.lastQuery
-	f.lastFile, f.lastQuery = file, query
+	newFile := !f.lastChunk.sameAs(file, query)
+	f.lastChunk.set(file, query)
 	if newFile {
 		f.files++
 	}
@@ -144,7 +154,7 @@ func (f *JSONFormatter) tally(file, query string, lines int) {
 	if query == "" {
 		return
 	}
-	qt := f.queryEntry(query)
+	qt := f.queries.entry(query)
 	if newFile {
 		qt[0]++
 	}
@@ -231,8 +241,6 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 		}
 		if m.IsContext {
 			jm.Type = "context"
-		} else if IsDefinitionLine(firstLine(ms.Data, m.LineStart, m.LineLen), result.FilePath) {
-			jm.Kind = "definition"
 		}
 
 		span := [2]int64{m.ByteOffset, m.ByteOffset + int64(m.LineLen)}
@@ -250,8 +258,15 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 					jm.Scope = string(s)
 				}
 			}
+			// Kind/Page ride on the same opt-in as Sections/Scope: language
+			// detection plus a keyword scan (IsDefinitionLine) isn't free,
+			// so it runs only when the caller already asked for annotated
+			// output, matching Page's existing gate.
 			if f.Sections || f.Scope {
 				jm.Page = nearestPage(ms.Data, m.LineStart)
+				if IsDefinitionLine(firstLine(ms.Data, m.LineStart, m.LineLen), result.FilePath) {
+					jm.Kind = "definition"
+				}
 			}
 			if caps := ms.MatchCaptures(i); len(caps) > 0 {
 				jm.Captures = make(map[string]string, len(caps))
@@ -300,32 +315,27 @@ func (f *JSONFormatter) Finish(buf []byte) []byte {
 	if !f.FilesOnly {
 		buf = append(buf, `,"lines":`...)
 		buf = strconv.AppendInt(buf, int64(f.lines), 10)
-		if f.suppressedLines > 0 {
+		// Under a budget, shown/omitted (below) already say what was
+		// actually shown; collapse's own shown_lines would otherwise
+		// double up the key with a different (budget-blind) meaning.
+		if f.suppressedLines > 0 && !f.hasBudget {
 			buf = append(buf, `,"shown_lines":`...)
 			buf = strconv.AppendInt(buf, int64(f.lines-f.suppressedLines), 10)
 		}
 	}
 	buf = append(buf, `,"errors":`...)
 	buf = strconv.AppendInt(buf, int64(f.errs), 10)
-	if len(f.queryOrder) > 0 {
-		buf = append(buf, `,"queries":[`...)
-		for i, q := range f.queryOrder {
-			if i > 0 {
-				buf = append(buf, ',')
-			}
-			qt := f.queryTotals[q]
-			buf = append(buf, `{"query":`...)
-			buf = appendJSONString(buf, q)
-			buf = append(buf, `,"files":`...)
-			buf = strconv.AppendInt(buf, int64(qt[0]), 10)
-			if !f.FilesOnly {
-				buf = append(buf, `,"lines":`...)
-				buf = strconv.AppendInt(buf, int64(qt[1]), 10)
-			}
-			buf = append(buf, '}')
-		}
-		buf = append(buf, ']')
+	if f.hasBudget {
+		buf = append(buf, `,"shown_lines":`...)
+		buf = strconv.AppendInt(buf, int64(f.budgetShownLines), 10)
+		buf = append(buf, `,"shown_files":`...)
+		buf = strconv.AppendInt(buf, int64(f.budgetShownFiles), 10)
+		buf = append(buf, `,"omitted_lines":`...)
+		buf = strconv.AppendInt(buf, int64(f.budgetOmittedLines), 10)
+		buf = append(buf, `,"omitted_files":`...)
+		buf = strconv.AppendInt(buf, int64(f.budgetOmittedFiles), 10)
 	}
+	buf = f.queries.appendJSON(buf, !f.FilesOnly)
 	buf = append(buf, "}\n"...)
 	return buf
 }

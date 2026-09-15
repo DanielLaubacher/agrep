@@ -83,6 +83,10 @@ func TestBudgetFormatter(t *testing.T) {
 	}
 }
 
+// The --max-tokens JSON trailer is a single {"type":"summary",...} record
+// carrying true totals plus the shown/omitted breakdown — not a second,
+// undocumented "budget_summary" record with its own (shown-only) numbers
+// that can disagree with the first (report bug 1).
 func TestBudgetFormatterJSONTrailer(t *testing.T) {
 	bf := NewBudgetFormatter(NewJSONFormatter(), 1, true)
 	line := []byte("some matching line content that exceeds four bytes\n")
@@ -91,8 +95,47 @@ func TestBudgetFormatterJSONTrailer(t *testing.T) {
 	buf = bf.Format(buf, fakeResult("g.txt", line, 0, len(line)-1), false)
 	buf = bf.Finish(buf)
 	out := string(buf)
-	if !strings.Contains(out, `"type":"summary"`) || !strings.Contains(out, `"omitted_files":1`) {
-		t.Errorf("bad JSON trailer:\n%s", out)
+	if strings.Contains(out, `"type":"budget_summary"`) {
+		t.Errorf("undocumented budget_summary record still emitted:\n%s", out)
+	}
+	if strings.Count(out, `"type":"summary"`) != 1 {
+		t.Errorf("want exactly one summary record:\n%s", out)
+	}
+	// True totals (both files were matched) alongside the shown/omitted
+	// breakdown, in the one summary record.
+	for _, want := range []string{
+		`"files":2`, `"lines":2`, `"errors":0`,
+		`"shown_lines":1`, `"shown_files":1`,
+		`"omitted_lines":1`, `"omitted_files":1`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("summary missing %s:\n%s", want, out)
+		}
+	}
+}
+
+// Per-query totals in the summary must be TRUE totals (found, not just
+// shown) even under a budget that cuts one query's output entirely
+// (report bug 1's --batch reproduction).
+func TestBudgetFormatterJSONPerQueryTrueTotals(t *testing.T) {
+	bf := NewBudgetFormatter(NewJSONFormatter(), 1, true)
+	bf.RegisterQueries([]string{"retry", "backoff"})
+	var buf []byte
+	retryLine := []byte("retry logic goes here in this line\n")
+	backoffLine := []byte("backoff logic goes here in this line\n")
+	r1 := fakeResult("f.txt", retryLine, 0, len(retryLine)-1)
+	r1.Query = "retry"
+	r2 := fakeResult("f.txt", backoffLine, 0, len(backoffLine)-1)
+	r2.Query = "backoff"
+	buf = bf.Format(buf, r1, false)
+	buf = bf.Format(buf, r2, false)
+	buf = bf.Finish(buf)
+	out := string(buf)
+	if !strings.Contains(out, `{"query":"retry","files":1,"lines":1}`) {
+		t.Errorf("retry query totals wrong (should be true, not shown-only):\n%s", out)
+	}
+	if !strings.Contains(out, `{"query":"backoff","files":1,"lines":1}`) {
+		t.Errorf("backoff query totals wrong — must stay 1/1 (true) even though its output was cut by the budget:\n%s", out)
 	}
 }
 

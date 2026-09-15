@@ -115,8 +115,7 @@ type BudgetFormatter struct {
 	// Per-query TRUE totals for --batch (counted before the budget cut,
 	// so the breakdown — including explicit zero-hit probes — survives
 	// budget wrapping).
-	queryOrder  []string
-	queryTotals map[string]*[2]int // query -> {files, lines}
+	queries queryTally
 }
 
 // NewBudgetFormatter wraps inner with a budget of maxTokens output tokens.
@@ -151,7 +150,7 @@ func (f *BudgetFormatter) Format(buf []byte, result Result, multiFile bool) []by
 		return f.inner.Format(buf, result, multiFile)
 	}
 	if result.Query != "" && (lines > 0 || result.HasMatch()) {
-		qt := f.queryEntry(result.Query)
+		qt := f.queries.entry(result.Query)
 		qt[0]++
 		qt[1] += lines
 	}
@@ -222,73 +221,53 @@ func (f *BudgetFormatter) Format(buf []byte, result Result, multiFile bool) []by
 	return buf
 }
 
-// queryEntry returns (creating if needed) the per-query totals slot.
-func (f *BudgetFormatter) queryEntry(query string) *[2]int {
-	if f.queryTotals == nil {
-		f.queryTotals = make(map[string]*[2]int)
-	}
-	qt := f.queryTotals[query]
-	if qt == nil {
-		qt = &[2]int{}
-		f.queryTotals[query] = qt
-		f.queryOrder = append(f.queryOrder, query)
-	}
-	return qt
+// budgetAware is implemented by formatters that fold a --max-tokens
+// shown/omitted breakdown and true per-query totals (counted before any
+// cut) into their own exact-totals summary record, per the documented
+// JSON contract — not a second, undocumented record (report bug 1).
+type budgetAware interface {
+	SetBudgetTotals(shownLines, shownFiles, omittedLines, omittedFiles int, trueQueries *queryTally)
 }
 
-// Finish appends the budget summary. Call once after all results.
+// Finish folds the budget breakdown into the wrapped formatter's own
+// summary record (JSON mode), then finishes it so its totals still
+// reach the stream. Call once after all results.
 func (f *BudgetFormatter) Finish(buf []byte) []byte {
 	if f.json {
-		buf = append(buf, `{"type":"summary","shown_lines":`...)
-		buf = strconv.AppendInt(buf, int64(f.shownLines), 10)
-		buf = append(buf, `,"shown_files":`...)
-		buf = strconv.AppendInt(buf, int64(f.shownFiles), 10)
-		buf = append(buf, `,"omitted_lines":`...)
-		buf = strconv.AppendInt(buf, int64(f.omittedLines), 10)
-		buf = append(buf, `,"omitted_files":`...)
-		buf = strconv.AppendInt(buf, int64(f.omittedFiles), 10)
-		// --batch: per-query TRUE totals (found, not just shown), so
-		// zero-hit probes stay explicit under a budget.
-		if len(f.queryOrder) > 0 {
-			buf = append(buf, `,"queries":[`...)
-			for i, q := range f.queryOrder {
-				if i > 0 {
-					buf = append(buf, ',')
-				}
-				qt := f.queryTotals[q]
-				buf = append(buf, `{"query":`...)
-				buf = appendJSONString(buf, q)
-				buf = append(buf, `,"files":`...)
-				buf = strconv.AppendInt(buf, int64(qt[0]), 10)
-				buf = append(buf, `,"lines":`...)
-				buf = strconv.AppendInt(buf, int64(qt[1]), 10)
-				buf = append(buf, '}')
-			}
-			buf = append(buf, ']')
+		if ba, ok := f.inner.(budgetAware); ok {
+			ba.SetBudgetTotals(f.shownLines, f.shownFiles, f.omittedLines, f.omittedFiles, &f.queries)
 		}
-		buf = append(buf, "}\n"...)
-		return buf
+	} else if f.omittedLines > 0 || f.omittedFiles > 0 {
+		buf = append(buf, "[agrep] output budget reached: showing "...)
+		buf = strconv.AppendInt(buf, int64(f.shownLines), 10)
+		buf = append(buf, " matching lines in "...)
+		buf = strconv.AppendInt(buf, int64(f.shownFiles), 10)
+		buf = append(buf, " files; omitted "...)
+		buf = strconv.AppendInt(buf, int64(f.omittedLines), 10)
+		buf = append(buf, " lines in "...)
+		buf = strconv.AppendInt(buf, int64(f.omittedFiles), 10)
+		buf = append(buf, " more files\n"...)
 	}
-	if f.omittedLines == 0 && f.omittedFiles == 0 {
-		return buf
+	if fin, ok := f.inner.(Finisher); ok {
+		buf = fin.Finish(buf)
 	}
-	buf = append(buf, "[agrep] output budget reached: showing "...)
-	buf = strconv.AppendInt(buf, int64(f.shownLines), 10)
-	buf = append(buf, " matching lines in "...)
-	buf = strconv.AppendInt(buf, int64(f.shownFiles), 10)
-	buf = append(buf, " files; omitted "...)
-	buf = strconv.AppendInt(buf, int64(f.omittedLines), 10)
-	buf = append(buf, " lines in "...)
-	buf = strconv.AppendInt(buf, int64(f.omittedFiles), 10)
-	buf = append(buf, " more files\n"...)
 	return buf
+}
+
+// AddSuppressedLines forwards --collapse suppression accounting through
+// to the wrapped formatter, so CollapseFormatter's type assertion finds
+// it even when BudgetFormatter sits between them in the chain.
+func (f *BudgetFormatter) AddSuppressedLines(n int) {
+	if sr, ok := f.inner.(suppressedReporter); ok {
+		sr.AddSuppressedLines(n)
+	}
 }
 
 // RegisterQueries seeds per-query totals (zero-hit probes must appear
 // in the summary) and forwards to the wrapped formatter.
 func (f *BudgetFormatter) RegisterQueries(queries []string) {
 	for _, q := range queries {
-		f.queryEntry(q)
+		f.queries.entry(q)
 	}
 	if qr, ok := f.inner.(QueryRegistrar); ok {
 		qr.RegisterQueries(queries)
