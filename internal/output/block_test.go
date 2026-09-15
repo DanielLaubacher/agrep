@@ -57,6 +57,18 @@ func TestBlockBoundsMarkdown(t *testing.T) {
 	}
 }
 
+// A Table of Contents heading is technically the enclosing block, but
+// dumping a multi-hundred-line listing for a title mentioned only in
+// passing is a low-value citation (report bug 3): the match falls
+// through to its plain line instead.
+func TestBlockBoundsMarkdownSkipsTOC(t *testing.T) {
+	data := []byte("# Table of Contents\n\nCircuit Breaker\n\nTimeouts\n\n## Circuit Breaker\nThe pattern itself.\n")
+	pos := indexOfLineStart(data, "Circuit Breaker", t)
+	if _, _, _, ok := blockBounds(data, pos, "b.md"); ok {
+		t.Error("table of contents should have no block notion")
+	}
+}
+
 func TestBlockBoundsGenericNone(t *testing.T) {
 	if _, _, _, ok := blockBounds([]byte("plain\ntext\n"), 0, "notes.txt"); ok {
 		t.Error("generic files have no block notion")

@@ -28,8 +28,7 @@ type BlockFormatter struct {
 	// matches across consecutive Format calls, so the last emitted block
 	// per (file, query) must survive between calls or a block with
 	// matches in two chunks would be emitted twice.
-	lastFile  string
-	lastQuery string
+	lastChunk chunkKey
 	lastBlock int
 }
 
@@ -50,6 +49,15 @@ func blockBounds(data []byte, lineStart int, path string) (int, int, bool, bool)
 	if fam == lang.Markdown {
 		h, hs := sectionHeadingAt(data, lineStart)
 		if h == nil {
+			return 0, 0, false, false
+		}
+		if isListingHeading(h) {
+			// A Table of Contents (or similar pure-listing section) is
+			// technically the "enclosing block", but dumping the whole
+			// multi-hundred-line listing is a low-value citation — the
+			// match is a title mentioned in passing, not content about
+			// it (report bug 3). Fall through to the plain match line,
+			// same as when a family has no block notion at all.
 			return 0, 0, false, false
 		}
 		// Section runs to the next heading line or EOF.
@@ -151,6 +159,19 @@ func clampBlock(data []byte, start, end int) (int, int, bool, bool) {
 	return start, end, truncated, true
 }
 
+// isListingHeading reports whether a Markdown heading names a
+// pure-listing section (a table of contents, index, or similar) whose
+// body is a directory of titles rather than content about any one of
+// them — a bad --block citation unit (report bug 3).
+func isListingHeading(h []byte) bool {
+	title := strings.ToLower(strings.TrimSpace(strings.TrimLeft(string(h), "# \t")))
+	switch title {
+	case "table of contents", "contents", "toc", "index":
+		return true
+	}
+	return false
+}
+
 func lineEnd(data []byte, pos int) int {
 	for pos < len(data) && data[pos] != '\n' {
 		pos++
@@ -175,7 +196,7 @@ func (f *BlockFormatter) Format(buf []byte, result Result, multiFile bool) []byt
 	out := matcher.MatchSet{Data: ms.Data, Captures: ms.Captures}
 	lastStart := -1
 	lastFromPrevCall := false
-	if result.FilePath == f.lastFile && result.Query == f.lastQuery {
+	if f.lastChunk.sameAs(result.FilePath, result.Query) {
 		lastStart = f.lastBlock
 		lastFromPrevCall = lastStart >= 0
 	}
@@ -238,7 +259,8 @@ func (f *BlockFormatter) Format(buf []byte, result Result, multiFile bool) []byt
 		lastFromPrevCall = false
 	}
 
-	f.lastFile, f.lastQuery, f.lastBlock = result.FilePath, result.Query, lastStart
+	f.lastChunk.set(result.FilePath, result.Query)
+	f.lastBlock = lastStart
 
 	if !changed {
 		return f.inner.Format(buf, result, multiFile)
