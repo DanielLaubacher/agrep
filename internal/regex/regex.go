@@ -31,8 +31,23 @@ type Regexp struct {
 	prefilter  *prefilter
 	flags      syntax.Flags
 	engineType engineType
+	mode       Mode
 	literal    []byte
 	literalCI  bool
+	// wordStart/wordEnd: the literal engine also enforces \b before/after
+	// the literal (the \bword\b fast path).
+	wordStart bool
+	wordEnd   bool
+	// gate is a literal every match must contain, checked once per buffer
+	// before running the engine (multiline mode, where a prefilter must not
+	// confine verification to one line). Nil when there is none.
+	gate   []byte
+	gateCI bool
+	// relaxed is a forward DFA for the pattern with its assertions removed
+	// (a superset language). Assertion patterns run the PikeVM, so the
+	// relaxed DFA rejects candidate lines first — most lines holding the
+	// literal do not hold the pattern's shape. Nil when unavailable.
+	relaxed *forwardDFA
 
 	// allowedBytes is the set of bytes any match can contain (union of all
 	// NFA consuming transitions). Used to bound rare-byte verify windows.
@@ -47,14 +62,39 @@ const (
 	engineLiteral
 )
 
+// Mode selects anchor semantics and how a literal prefilter may verify
+// its candidates.
+type Mode uint8
+
+const (
+	// ModeText is stdlib-compatible: ^ and $ anchor the whole text.
+	ModeText Mode = iota
+	// ModeLine is grep's line mode: ^ and $ anchor per line, and a
+	// prefilter verifies each candidate within its line.
+	ModeLine
+	// ModeMultiline (-U): ^ and $ anchor per line, but matches may span
+	// lines, so a prefilter may only anchor at the match start or gate
+	// the whole buffer — never confine verification to one line.
+	ModeMultiline
+)
+
 // Compile parses a regular expression and returns a Regexp object.
 func Compile(pattern string) (*Regexp, error) {
-	return compilePattern(pattern, syntax.Perl)
+	return compilePattern(pattern, syntax.Perl, ModeText)
+}
+
+// CompileMode compiles pattern with the given mode's anchor semantics.
+func CompileMode(pattern string, mode Mode) (*Regexp, error) {
+	flags := syntax.Perl
+	if mode != ModeText {
+		flags &^= syntax.OneLine // ^ $ per line
+	}
+	return compilePattern(pattern, flags, mode)
 }
 
 // CompilePOSIX parses a POSIX regular expression.
 func CompilePOSIX(pattern string) (*Regexp, error) {
-	return compilePattern(pattern, syntax.POSIX)
+	return compilePattern(pattern, syntax.POSIX, ModeText)
 }
 
 // MustCompile is like Compile but panics on error.
@@ -66,7 +106,7 @@ func MustCompile(pattern string) *Regexp {
 	return re
 }
 
-func compilePattern(pattern string, baseFlags syntax.Flags) (*Regexp, error) {
+func compilePattern(pattern string, baseFlags syntax.Flags, mode Mode) (*Regexp, error) {
 	flags := baseFlags
 	re, err := syntax.Parse(pattern, flags)
 	if err != nil {
@@ -82,6 +122,7 @@ func compilePattern(pattern string, baseFlags syntax.Flags) (*Regexp, error) {
 		nfa:     nfa,
 		vm:      vm,
 		flags:   flags,
+		mode:    mode,
 	}
 	rx.allowedBytes = computeAllowedBytes(nfa)
 
@@ -97,11 +138,41 @@ func compilePattern(pattern string, baseFlags syntax.Flags) (*Regexp, error) {
 		return rx, nil
 	}
 
+	// \bword\b — a literal wrapped in word-boundary assertions, the shape
+	// of every -w search. The literal engine verifies each SIMD hit with
+	// one byte check per side; the PikeVM (the general assertion engine)
+	// never runs. A word boundary depends only on the adjacent bytes, so
+	// this is exact in every mode.
+	if lit, ci, start, end, ok := wordLiteral(re); ok {
+		rx.engineType = engineLiteral
+		rx.literal = lit
+		rx.literalCI = ci
+		rx.wordStart = start
+		rx.wordEnd = end
+		return rx, nil
+	}
+
 	// Patterns with assertions fall back to PikeVM (DFA can't handle
-	// position-dependent assertions). No prefilter — the prefilter path
-	// extracts lines which changes assertion semantics ($, \b, etc.).
+	// position-dependent assertions). They keep a literal prefilter in
+	// line mode: ^ $ \b \B are decided by the bytes adjacent to a
+	// position, and a line carries the same neighbours as the buffer (a
+	// newline on either side is a non-word byte, and the line edge is
+	// exactly where ^/$ hold), so verifying a candidate within its line
+	// preserves their semantics. Only \A and \z refer to the whole text.
+	// Rare-byte windows do not start at line edges, so only the literal
+	// prefilter applies. Without this, '\berror\b' cost 40x a plain
+	// literal search (report bug 1).
 	if nfa.Flags&FlagHasAssert != 0 {
 		rx.engineType = enginePikeVM
+		switch mode {
+		case ModeLine:
+			if !hasTextAnchors(re) {
+				rx.applyPrefilter(literalOnly(extractPrefilter(pattern, flags)))
+				rx.relaxed = relaxedDFA(re)
+			}
+		case ModeMultiline:
+			rx.applyPrefilter(extractPrefilter(pattern, flags))
+		}
 		return rx, nil
 	}
 
@@ -119,13 +190,13 @@ func compilePattern(pattern string, baseFlags syntax.Flags) (*Regexp, error) {
 		rx.fwdDFA = nil
 		rx.searchDFA = nil
 		rx.engineType = enginePikeVM
-		rx.prefilter = extractPrefilter(pattern, flags)
+		rx.applyPrefilter(extractPrefilter(pattern, flags))
 		return rx, nil
 	}
 	rx.searchDFA.precomputed = true
 
 	// Extract prefilter literals
-	rx.prefilter = extractPrefilter(pattern, flags)
+	rx.applyPrefilter(extractPrefilter(pattern, flags))
 
 	// Heuristic: if the search DFA's SIMD range scan is already selective
 	// (few start bytes), a rare-byte prefilter adds overhead (line extraction
@@ -151,6 +222,130 @@ func (re *Regexp) String() string {
 	return re.pattern
 }
 
+// applyPrefilter installs pf according to the mode. Line-mode prefilters
+// verify candidates within their line. In multiline mode a match may span
+// lines, so a prefilter may only anchor (every match starts with the
+// literal, and the DFA runs from each hit across newlines) or gate (the
+// literal is absent from the buffer, so no match exists at all).
+func (re *Regexp) applyPrefilter(pf *prefilter) {
+	if pf == nil {
+		return
+	}
+	if re.mode != ModeMultiline {
+		re.prefilter = pf
+		return
+	}
+	if pf.hasRareByte {
+		return // verify windows stop at newlines
+	}
+	if pf.primaryIsPrefix && re.engineType == engineDFA {
+		pf.extras, pf.extrasCI = nil, nil // extras are checked per line
+		re.prefilter = pf
+		return
+	}
+	re.gate = pf.primary
+	re.gateCI = pf.primaryCI
+}
+
+// gated reports whether the gate literal is absent from b, which proves
+// b holds no match.
+func (re *Regexp) gated(b []byte) bool {
+	if re.gate == nil {
+		return false
+	}
+	if re.gateCI {
+		return simd.IndexCaseInsensitive(b, re.gate) < 0
+	}
+	return bytes.Index(b, re.gate) < 0
+}
+
+// relaxedDFA builds a match-only DFA for re with every assertion replaced
+// by an empty match. It accepts a superset of re, so rejection is exact.
+func relaxedDFA(re *syntax.Regexp) *forwardDFA {
+	stripped := stripAssertions(re).Simplify()
+	if hasAssertions(stripped) {
+		return nil
+	}
+	nfa := compile(stripped)
+	fd := newForwardDFA(nfa)
+	if !fd.precomputeAll() {
+		return nil
+	}
+	return fd
+}
+
+// stripAssertions returns a copy of re with assertion nodes replaced by
+// empty matches.
+func stripAssertions(re *syntax.Regexp) *syntax.Regexp {
+	switch re.Op {
+	case syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText,
+		syntax.OpWordBoundary, syntax.OpNoWordBoundary:
+		return &syntax.Regexp{Op: syntax.OpEmptyMatch}
+	}
+	out := *re
+	if len(re.Sub) > 0 {
+		out.Sub = make([]*syntax.Regexp, len(re.Sub))
+		for i, sub := range re.Sub {
+			out.Sub[i] = stripAssertions(sub)
+		}
+	}
+	return &out
+}
+
+// lineMayMatch reports whether the relaxed DFA admits the line (always
+// true without one).
+func (re *Regexp) lineMayMatch(line []byte) bool {
+	return re.relaxed == nil || re.relaxed.match(line)
+}
+
+// literalOnly drops a rare-byte prefilter, keeping only literal ones.
+func literalOnly(pf *prefilter) *prefilter {
+	if pf == nil || pf.hasRareByte {
+		return nil
+	}
+	return pf
+}
+
+// wordLiteral recognises \bLIT, LIT\b and \bLIT\b for an ASCII literal.
+func wordLiteral(re *syntax.Regexp) (lit []byte, ci, start, end, ok bool) {
+	if re.Op != syntax.OpConcat || len(re.Sub) < 2 || len(re.Sub) > 3 {
+		return
+	}
+	subs := re.Sub
+	if subs[0].Op == syntax.OpWordBoundary {
+		start = true
+		subs = subs[1:]
+	}
+	if len(subs) > 0 && subs[len(subs)-1].Op == syntax.OpWordBoundary {
+		end = true
+		subs = subs[:len(subs)-1]
+	}
+	if len(subs) != 1 || subs[0].Op != syntax.OpLiteral || len(subs[0].Rune) == 0 || !allASCII(subs[0].Rune) {
+		return nil, false, false, false, false
+	}
+	str := string(subs[0].Rune)
+	ci = subs[0].Flags&syntax.FoldCase != 0
+	if ci {
+		str = strings.ToLower(str)
+	}
+	return []byte(str), ci, start, end, true
+}
+
+// hasTextAnchors reports whether the pattern uses \A or \z (or ^ $ in
+// one-line mode), which refer to the whole text rather than a line.
+func hasTextAnchors(re *syntax.Regexp) bool {
+	switch re.Op {
+	case syntax.OpBeginText, syntax.OpEndText:
+		return true
+	}
+	for _, sub := range re.Sub {
+		if hasTextAnchors(sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // CanMatchNewline reports whether any match can contain a '\n' byte.
 // When false, matches never span lines, so a buffer may be searched in
 // line-aligned chunks (in parallel) without missing or splitting matches.
@@ -160,6 +355,9 @@ func (re *Regexp) CanMatchNewline() bool {
 
 // Match reports whether the byte slice b contains any match of the regexp.
 func (re *Regexp) Match(b []byte) bool {
+	if re.gated(b) {
+		return false
+	}
 	if re.prefilter != nil && len(b) > 0 {
 		// Candidate-driven: SIMD scan for the required literal/byte and
 		// verify only around hits. Far cheaper than walking the forward
@@ -193,6 +391,9 @@ func (re *Regexp) Find(b []byte) []byte {
 
 // FindIndex returns the leftmost match location [start, end], or [-1, -1].
 func (re *Regexp) FindIndex(b []byte) [2]int {
+	if re.gated(b) {
+		return [2]int{-1, -1}
+	}
 	if re.prefilter != nil && len(b) > 0 {
 		return re.findIndexPrefiltered(b)
 	}
@@ -222,7 +423,7 @@ func (re *Regexp) FindAll(b []byte, n int) [][]byte {
 
 // FindAllIndex returns all non-overlapping match locations.
 func (re *Regexp) FindAllIndex(b []byte, n int) [][2]int {
-	if n == 0 {
+	if n == 0 || re.gated(b) {
 		return nil
 	}
 
@@ -246,6 +447,9 @@ func (re *Regexp) FindAllIndex(b []byte, n int) [][2]int {
 // the surrounding bytes are still cache-hot from the scan — on buffers larger
 // than L3 this avoids a second cold pass over the data.
 func (re *Regexp) FindAllIndexFunc(b []byte, yield func(start, end int) bool) {
+	if re.gated(b) {
+		return
+	}
 	if re.prefilter != nil && len(b) > 0 {
 		pf := re.prefilter
 		switch {
@@ -413,7 +617,61 @@ func (re *Regexp) FindAllRuneIndex(s string, n int) [][2]int {
 
 // --- Literal engine ---
 
+// literalIndex returns the next raw occurrence of the literal at or after
+// pos, or -1.
+func (re *Regexp) literalIndex(b []byte, pos int) int {
+	if pos > len(b) {
+		return -1
+	}
+	var idx int
+	if re.literalCI {
+		idx = simd.IndexCaseInsensitive(b[pos:], re.literal)
+	} else {
+		idx = bytes.Index(b[pos:], re.literal)
+	}
+	if idx < 0 {
+		return -1
+	}
+	return pos + idx
+}
+
+// literalWordOK reports whether an occurrence at off satisfies the word
+// boundaries the pattern asked for. \b is an ASCII word boundary — the
+// word-ness of the byte outside the literal must differ from that of the
+// literal's edge byte (past either end of b counts as non-word).
+func (re *Regexp) literalWordOK(b []byte, off int) bool {
+	if re.wordStart {
+		prevWord := off > 0 && isWordByte(b[off-1])
+		if prevWord == isWordByte(re.literal[0]) {
+			return false
+		}
+	}
+	if re.wordEnd {
+		end := off + len(re.literal)
+		nextWord := end < len(b) && isWordByte(b[end])
+		if nextWord == isWordByte(re.literal[len(re.literal)-1]) {
+			return false
+		}
+	}
+	return true
+}
+
+// literalNext returns the next occurrence at or after pos that satisfies
+// the word boundaries, or -1.
+func (re *Regexp) literalNext(b []byte, pos int) int {
+	for {
+		idx := re.literalIndex(b, pos)
+		if idx < 0 || re.literalWordOK(b, idx) {
+			return idx
+		}
+		pos = idx + 1
+	}
+}
+
 func (re *Regexp) literalMatch(b []byte) bool {
+	if re.wordStart || re.wordEnd {
+		return re.literalNext(b, 0) >= 0
+	}
 	if re.literalCI {
 		return simd.IndexCaseInsensitive(b, re.literal) >= 0
 	}
@@ -421,12 +679,7 @@ func (re *Regexp) literalMatch(b []byte) bool {
 }
 
 func (re *Regexp) literalFindIndex(b []byte) [2]int {
-	var idx int
-	if re.literalCI {
-		idx = simd.IndexCaseInsensitive(b, re.literal)
-	} else {
-		idx = bytes.Index(b, re.literal)
-	}
+	idx := re.literalNext(b, 0)
 	if idx < 0 {
 		return [2]int{-1, -1}
 	}
@@ -434,6 +687,21 @@ func (re *Regexp) literalFindIndex(b []byte) [2]int {
 }
 
 func (re *Regexp) literalFindAllIndex(b []byte, n int) [][2]int {
+	plen := len(re.literal)
+	if re.wordStart || re.wordEnd {
+		var result [][2]int
+		pos := 0
+		for n < 0 || len(result) < n {
+			idx := re.literalNext(b, pos)
+			if idx < 0 {
+				break
+			}
+			result = append(result, [2]int{idx, idx + plen})
+			pos = idx + plen
+		}
+		return result
+	}
+
 	var offsets []int
 	if re.literalCI {
 		offsets = simd.IndexAllCaseInsensitive(b, re.literal)
@@ -450,7 +718,6 @@ func (re *Regexp) literalFindAllIndex(b []byte, n int) [][2]int {
 	}
 
 	result := make([][2]int, limit)
-	plen := len(re.literal)
 	for i := 0; i < limit; i++ {
 		result[i] = [2]int{offsets[i], offsets[i] + plen}
 	}
@@ -549,7 +816,7 @@ func (re *Regexp) findIndexPrefiltered(data []byte) [2]int {
 		// scanned the full line), so skip straight past it.
 		lineStart, lineEnd := lineBoundsAround(data, hit)
 		line := data[lineStart:lineEnd]
-		if re.checkExtras(line, hit-lineStart+len(pf.primary)) {
+		if re.checkExtras(line, hit-lineStart+len(pf.primary)) && re.lineMayMatch(line) {
 			var m [2]int
 			switch re.engineType {
 			case engineDFA:
@@ -670,7 +937,7 @@ func (re *Regexp) findAllIndexPrefilteredFunc(data []byte, yield func(s, e int) 
 
 		lineStart, lineEnd := lineBoundsAround(data, hit)
 		line := data[lineStart:lineEnd]
-		if re.checkExtras(line, hit-lineStart+len(pf.primary)) {
+		if re.checkExtras(line, hit-lineStart+len(pf.primary)) && re.lineMayMatch(line) {
 			var lineLocs [][2]int
 			switch re.engineType {
 			case engineDFA:

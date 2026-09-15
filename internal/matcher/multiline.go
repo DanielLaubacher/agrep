@@ -9,15 +9,48 @@ package matcher
 //
 // (?m) is enabled so ^ and $ anchor per line. Deliberately does NOT
 // implement LineBounded: a chunked parallel scan could split a match.
+//
+// The engine is the internal DFA compiled in multiline mode — its literal
+// prefilter only anchors at match starts or gates whole buffers, never
+// confining verification to a line. The stdlib engine remains the
+// fallback for constructs the internal one rejects and for non-ASCII
+// case folding; it has no prefilter under (?i), which made every
+// lowercase -U query under smart-case a 3-4s whole-tree NFA walk
+// (report bug 2).
 
 import (
 	"bytes"
 	"regexp"
 	"strings"
+
+	"github.com/DanielLaubacher/agrep/internal/regex"
 )
 
+// mlEngine is what MultilineMatcher needs from a regex engine.
+type mlEngine interface {
+	Match(b []byte) bool
+	FindAllIndex(b []byte, n int) [][2]int
+}
+
+// stdMLEngine adapts the stdlib engine to mlEngine.
+type stdMLEngine struct{ re *regexp.Regexp }
+
+func (e stdMLEngine) Match(b []byte) bool { return e.re.Match(b) }
+
+func (e stdMLEngine) FindAllIndex(b []byte, n int) [][2]int {
+	locs := e.re.FindAllIndex(b, n)
+	if len(locs) == 0 {
+		return nil
+	}
+	out := make([][2]int, len(locs))
+	for i, l := range locs {
+		out[i] = [2]int{l[0], l[1]}
+	}
+	return out
+}
+
 type MultilineMatcher struct {
-	re           *regexp.Regexp
+	re           mlEngine
 	needLineNums bool
 }
 
@@ -35,11 +68,18 @@ func NewMultilineMatcher(patterns []string, fixed bool, ignoreCase bool, opts Ma
 	if ignoreCase {
 		pattern = "(?i)" + pattern
 	}
+	// Non-ASCII -i needs full Unicode folding, which only the stdlib
+	// engine provides (the internal one folds ASCII).
+	if !ignoreCase || allASCII(patterns) {
+		if re, err := regex.CompileMode(pattern, regex.ModeMultiline); err == nil {
+			return &MultilineMatcher{re: re, needLineNums: opts.NeedLineNums}, nil
+		}
+	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return nil, err
 	}
-	return &MultilineMatcher{re: re, needLineNums: opts.NeedLineNums}, nil
+	return &MultilineMatcher{re: stdMLEngine{re}, needLineNums: opts.NeedLineNums}, nil
 }
 
 func (m *MultilineMatcher) MatchExists(data []byte) bool {

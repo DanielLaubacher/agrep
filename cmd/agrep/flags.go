@@ -33,6 +33,7 @@ Options:
   -P, --perl-regexp        Interpret pattern as PCRE2 regex
   -t, --pipe               Pipe matched text into the next -e pattern
   -o, --only-matching      Print only the matched part of the line
+  -w, --word-regexp        Match only whole words: \b(?:PATTERN)\b
   -i, --ignore-case        Case-insensitive matching
   -S, --smart-case         Case-insensitive if pattern is all lowercase
   -s, --case-sensitive     Force case-sensitive matching (overrides earlier
@@ -274,6 +275,8 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			cfg.FollowSymlinks = true
 		case "--watch":
 			cfg.WatchMode = true
+		case "-w", "--word-regexp":
+			cfg.WordRegexp = true
 		case "-U", "--multiline":
 			cfg.Multiline = true
 		case "--structural":

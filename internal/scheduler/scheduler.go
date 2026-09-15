@@ -38,41 +38,49 @@ func New(workers int, m matcher.Matcher, r input.Reader, filesOnly bool, countOn
 	}
 }
 
-// seqEntry pairs a file with its walk-order sequence number. Sequence
-// numbers are assigned by a single tagger goroutine before workers
-// consume entries — claiming them inside the workers would race, making
-// output order (and therefore budgeted output) vary between runs.
-type seqEntry struct {
-	entry walker.FileEntry
+// seqSource hands out files together with their walk-order sequence
+// numbers. Receive and numbering happen under one lock, so the sequence
+// is exactly the channel's delivery order — workers claiming numbers
+// after an unlocked receive could number files out of order, making
+// output order (and therefore budgeted output) vary between runs. A
+// lock around the receive costs one uncontended lock per file; the
+// alternative — a tagger goroutine relaying entries through a second
+// channel — cost ~20ms on a 65K-file tree.
+type seqSource struct {
+	mu    sync.Mutex
+	files <-chan walker.FileEntry
 	seq   int
 }
 
-// tagEntries assigns walk-order sequence numbers to incoming files.
-func tagEntries(files <-chan walker.FileEntry, buffered int) <-chan seqEntry {
-	tagged := make(chan seqEntry, buffered)
-	go func() {
-		defer close(tagged)
-		seq := 0
-		for entry := range files {
-			seq++
-			tagged <- seqEntry{entry: entry, seq: seq}
-		}
-	}()
-	return tagged
+// next returns the next file and its sequence number; ok is false once
+// the channel is closed and drained.
+func (s *seqSource) next() (entry walker.FileEntry, seq int, ok bool) {
+	s.mu.Lock()
+	entry, ok = <-s.files
+	if ok {
+		s.seq++
+		seq = s.seq
+	}
+	s.mu.Unlock()
+	return entry, seq, ok
 }
 
 // Run processes files from the file channel and returns results on the result channel.
 // Results include sequence numbers for ordered output.
 func (s *Scheduler) Run(files <-chan walker.FileEntry) <-chan output.Result {
 	resultCh := make(chan output.Result, s.workers*2)
-	tagged := tagEntries(files, s.workers*2)
+	src := &seqSource{files: files}
 
 	var wg sync.WaitGroup
 	for range s.workers {
 		wg.Go(func() {
-			for te := range tagged {
-				result := s.processFile(te.entry)
-				result.SeqNum = te.seq
+			for {
+				entry, seq, ok := src.next()
+				if !ok {
+					return
+				}
+				result := s.processFile(entry)
+				result.SeqNum = seq
 				resultCh <- result
 			}
 		})
@@ -93,14 +101,18 @@ func (s *Scheduler) Run(files <-chan walker.FileEntry) <-chan output.Result {
 func (s *Scheduler) RunBatch(files <-chan walker.FileEntry, matchers []matcher.Matcher, queries []string) <-chan output.Result {
 	q := len(matchers)
 	resultCh := make(chan output.Result, s.workers*2)
-	tagged := tagEntries(files, s.workers*2)
+	src := &seqSource{files: files}
 
 	var wg sync.WaitGroup
 	for range s.workers {
 		wg.Go(func() {
-			for te := range tagged {
-				base := (te.seq - 1) * q
-				results := s.processFileBatch(te.entry, matchers, queries)
+			for {
+				entry, seq, ok := src.next()
+				if !ok {
+					return
+				}
+				base := (seq - 1) * q
+				results := s.processFileBatch(entry, matchers, queries)
 				for i := range results {
 					results[i].SeqNum = base + i + 1
 					resultCh <- results[i]

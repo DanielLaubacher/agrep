@@ -1,6 +1,9 @@
 package cli
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+)
 
 // ColorMode controls when colored output is used.
 type ColorMode int
@@ -69,6 +72,7 @@ type Config struct {
 	Rank         string   // --rank: outline order — "count" (default), "density", or "defs"
 	Collapse     bool     // --collapse: suppress repeats of identical match lines
 	Multiline    bool     // -U/--multiline: patterns may match across lines
+	WordRegexp   bool     // -w/--word-regexp: match only whole words
 	Structural   bool     // -S/--structural: pattern is a template with :[name] holes
 	Lang         string   // --lang: language family for -S (default: generic)
 	Capture      string   // --capture: hole name for --histogram aggregation
@@ -182,8 +186,8 @@ func (c *Config) Validate() error {
 		}
 	}
 	if c.Structural {
-		if c.PCRE || c.Invert || c.WatchMode || c.Multiline || c.Ident || c.Fixed {
-			return fmt.Errorf("--structural cannot combine with -F, -P, -v, -U, --ident, or --watch")
+		if c.PCRE || c.Invert || c.WatchMode || c.Multiline || c.Ident || c.Fixed || c.WordRegexp {
+			return fmt.Errorf("--structural cannot combine with -F, -P, -v, -U, -w, --ident, or --watch")
 		}
 		if c.ContextBefore > 0 || c.ContextAfter > 0 {
 			return fmt.Errorf("--structural cannot combine with context lines")
@@ -203,4 +207,14 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("--capture requires --structural and --histogram")
 	}
 	return nil
+}
+
+// WordPattern wraps a pattern so it matches only whole words (-w):
+// \b(?:PATTERN)\b, quoting a fixed string first. The result is always a
+// regex; \bLITERAL\b shapes run on the SIMD literal engine.
+func WordPattern(pattern string, fixed bool) string {
+	if fixed {
+		return `\b` + regexp.QuoteMeta(pattern) + `\b`
+	}
+	return `\b(?:` + pattern + `)\b`
 }

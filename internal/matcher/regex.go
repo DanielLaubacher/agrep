@@ -26,6 +26,9 @@ func NewRegexMatcher(pattern string, ignoreCase bool, invert bool) (*RegexMatche
 	if ignoreCase {
 		pattern = "(?i)" + pattern
 	}
+	// Line mode: ^ and $ must hold at every line, not just the buffer's
+	// ends — this matcher runs over whole files.
+	pattern = "(?m)" + pattern
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return nil, err

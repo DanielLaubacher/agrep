@@ -420,3 +420,181 @@ func formatStdLocs(locs [][]int) [][2]int {
 	}
 	return result
 }
+
+// Line mode: ^ and $ hold at every line (report: '^b' on "a\nb\n" found
+// nothing), and assertion patterns keep a literal prefilter whose
+// per-line verification must agree with the stdlib engine.
+func TestCompileModeLineAnchors(t *testing.T) {
+	data := []byte("a\nb\nab\nba\n")
+	cases := []struct {
+		pat  string
+		want [][2]int
+	}{
+		{`^b`, [][2]int{{2, 3}, {7, 8}}},
+		{`b$`, [][2]int{{2, 3}, {5, 6}}},
+		{`^a$`, [][2]int{{0, 1}}},
+		{`^ab$`, [][2]int{{4, 6}}},
+		{`\Aa`, [][2]int{{0, 1}}},
+	}
+	for _, c := range cases {
+		re, err := CompileMode(c.pat, ModeLine)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := re.FindAllIndex(data, -1)
+		if !equalLocs(got, c.want) {
+			t.Errorf("ModeLine %q: got %v, want %v", c.pat, got, c.want)
+		}
+		if (len(c.want) > 0) != re.Match(data) {
+			t.Errorf("ModeLine %q: Match disagrees with FindAllIndex", c.pat)
+		}
+	}
+}
+
+func TestWordLiteralFastPath(t *testing.T) {
+	data := []byte("error errors _error error_ (error) ERROR\nerror\nxerror error")
+	cases := []struct {
+		pat   string
+		count int
+	}{
+		{`\berror\b`, 4},
+		{`(?i)\berror\b`, 5},
+		{`\berror`, 6},
+		{`error\b`, 6},
+		{`\b\(error\)\b`, 0}, // '(' is non-word and is preceded by a space
+		{`\bx`, 1},
+	}
+	for _, c := range cases {
+		re, err := CompileMode(c.pat, ModeLine)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if re.engineType != engineLiteral {
+			t.Errorf("%q: engine %v, want the literal engine", c.pat, re.engineType)
+		}
+		got := re.FindAllIndex(data, -1)
+		want := toLocs(regexp.MustCompile(c.pat).FindAllIndex(data, -1))
+		if len(want) != c.count {
+			t.Fatalf("%q: test expectation wrong, stdlib finds %d", c.pat, len(want))
+		}
+		if !equalLocs(got, want) {
+			t.Errorf("%q: got %v, want %v", c.pat, got, want)
+		}
+		if re.Match(data) != (c.count > 0) {
+			t.Errorf("%q: Match = %v", c.pat, re.Match(data))
+		}
+		if fi := re.FindIndex(data); (c.count == 0 && fi[0] >= 0) || (c.count > 0 && fi != want[0]) {
+			t.Errorf("%q: FindIndex = %v", c.pat, fi)
+		}
+	}
+}
+
+// The relaxed DFA (assertions stripped) must reject candidate lines that
+// lack the pattern's shape before the PikeVM runs.
+func TestRelaxedGate(t *testing.T) {
+	re, err := CompileMode(`\bgo\s+func\s*\(`, ModeLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if re.engineType != enginePikeVM || re.prefilter == nil {
+		t.Fatalf("engine %v prefilter %v", re.engineType, re.prefilter != nil)
+	}
+	if re.relaxed == nil {
+		t.Fatal("relaxed DFA not built")
+	}
+	if re.lineMayMatch([]byte("a func b")) {
+		t.Error("gate admitted a line without the shape")
+	}
+	if !re.lineMayMatch([]byte("x go  func (")) {
+		t.Error("gate rejected a matching line")
+	}
+}
+
+// Assertion patterns that are not a bare word literal keep the PikeVM but
+// gain a per-line literal prefilter; results must equal the stdlib's
+// multi-line-anchored results.
+func TestAssertionPrefilterMatchesStdlib(t *testing.T) {
+	data := []byte("go func(\ngo  func (x)\nlogo func(\n#define X\n  #define Y\nfoo_bar baz\nbaz foo_bar\n")
+	for _, pat := range []string{
+		`\bgo\s+func\s*\(`, `^#define`, `^\s*#define \w`, `\bfoo_bar\b baz`, `baz \bfoo`, `func\b\(`, `\Bo func`,
+	} {
+		re, err := CompileMode(pat, ModeLine)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if re.engineType != enginePikeVM {
+			t.Errorf("%q: expected PikeVM, got %v", pat, re.engineType)
+		}
+		if re.prefilter == nil {
+			t.Errorf("%q: expected a literal prefilter", pat)
+		}
+		got := re.FindAllIndex(data, -1)
+		want := toLocs(regexp.MustCompile(`(?m)` + pat).FindAllIndex(data, -1))
+		if !equalLocs(got, want) {
+			t.Errorf("%q: got %v, want %v", pat, got, want)
+		}
+	}
+	// \A refers to the whole text: no line prefilter may be used.
+	re, _ := CompileMode(`\Afoo_bar`, ModeLine)
+	if re.prefilter != nil {
+		t.Error(`\A pattern must not get a per-line prefilter`)
+	}
+	if got := re.FindAllIndex(data, -1); len(got) != 0 {
+		t.Errorf(`\Afoo_bar matched %v`, got)
+	}
+}
+
+// Multiline mode: a prefilter may anchor at the match start or gate the
+// buffer, but never confine verification to one line.
+func TestCompileModeMultiline(t *testing.T) {
+	data := []byte("x\nfoo(\n  bar)\ny\n  Foo(\nBAR)\n")
+	cases := []struct {
+		pat  string
+		want [][2]int
+	}{
+		{`foo\(\n\s*bar`, [][2]int{{2, 12}}},               // prefix literal: anchored verify across lines
+		{`(?i)foo\(\n\s*bar`, [][2]int{{2, 12}, {18, 26}}},  // case-insensitive anchored
+		{`\s*foo\(\n\s*bar`, [][2]int{{1, 12}}},             // non-prefix literal: gate only
+		{`(?i)\s*foo\(\n\s*bar`, [][2]int{{1, 12}, {15, 26}}},
+		{`^foo\($\n^\s*bar`, [][2]int{{2, 12}}},             // assertions: PikeVM, gated
+		{`(?i)\s*foo\(\n\s*zzz`, nil},                       // gate literal present, no match
+		{`(?i)qqq\(\n\s*bar`, nil},                          // gate literal absent
+	}
+	for _, c := range cases {
+		re, err := CompileMode(c.pat, ModeMultiline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := re.FindAllIndex(data, -1)
+		if !equalLocs(got, c.want) {
+			t.Errorf("ModeMultiline %q: got %v, want %v", c.pat, got, c.want)
+		}
+		want := toLocs(regexp.MustCompile(`(?m)` + c.pat).FindAllIndex(data, -1))
+		if !equalLocs(got, want) {
+			t.Errorf("ModeMultiline %q: disagrees with stdlib %v", c.pat, want)
+		}
+		if re.Match(data) != (len(c.want) > 0) {
+			t.Errorf("ModeMultiline %q: Match = %v", c.pat, re.Match(data))
+		}
+	}
+}
+
+func toLocs(locs [][]int) [][2]int {
+	out := make([][2]int, len(locs))
+	for i, l := range locs {
+		out[i] = [2]int{l[0], l[1]}
+	}
+	return out
+}
+
+func equalLocs(a, b [][2]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

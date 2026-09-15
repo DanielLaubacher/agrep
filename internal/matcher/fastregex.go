@@ -21,7 +21,9 @@ func NewFastRegexMatcher(pattern string, ignoreCase bool, invert bool) (*FastReg
 	if ignoreCase {
 		pattern = "(?i)" + pattern
 	}
-	re, err := regex.Compile(pattern)
+	// Line mode: ^ and $ hold at every line, and literal prefilters verify
+	// candidates within their line.
+	re, err := regex.CompileMode(pattern, regex.ModeLine)
 	if err != nil {
 		return nil, err
 	}

@@ -59,7 +59,7 @@ agrep is a Linux-only, high-performance grep alternative written in pure Go. Eve
                               +-------------+
 ```
 
-In recursive mode, a **Scheduler** (worker pool) sits between the Walker and Matcher, distributing files across `NumCPU * 2` goroutines. An **OrderedWriter** reassembles results in deterministic order using sequence numbers.
+In recursive mode, a **Scheduler** (worker pool) sits between the Walker and Matcher, distributing files across `NumCPU * 2` goroutines. Each worker receives a file and claims its sequence number under one lock, so numbering follows walk order exactly. An **OrderedWriter** reassembles results in deterministic order using sequence numbers.
 
 ## Directory Traversal
 
@@ -69,7 +69,7 @@ In recursive mode, a **Scheduler** (worker pool) sits between the Walker and Mat
 2. Read entries with `unix.Getdents(fd, buf)` into a 32 KB buffer.
 3. Parse raw `linux_dirent64` structs in-place (`unsafe.Pointer`). Each entry's `d_type` field classifies it as `DT_REG`, `DT_DIR`, `DT_LNK`, or `DT_UNKNOWN` without any `stat` syscall.
 4. Regular files: emit path-only `FileEntry{Path}` — file opening and stat are deferred to the reader.
-5. Directories: recurse with a parallel BFS (`NumCPU` walker goroutines). Skip `.git`, `.svn`, `.hg`, `node_modules`, and hidden dirs (`.` prefix) unless `--hidden` is set.
+5. Directories: listed by a pool of `NumCPU` lister goroutines (each directory read, name-sorted, and classified once), while a single emitter replays the listings in sorted-DFS order. Emission order is a correctness contract — repeated runs produce byte-identical output, so `--max-tokens` costs the same on a retry — and the parallel listing keeps the search workers fed (a serial sorted walk cost ~45% wall time on a 65K-file tree). Skip `.git`, `.svn`, `.hg`, `node_modules`, and hidden dirs (`.` prefix) unless `--hidden` is set.
 6. `DT_UNKNOWN` (rare, some filesystems like XFS): fall back to `unix.Stat` to determine type.
 7. `.gitignore` support: loads and stacks ignore rules per directory, matching patterns against relative paths.
 
@@ -347,6 +347,33 @@ config). agrep wins or ties every benchmarked workload:
 | recursive `define` `-l` (/usr/include) | **112ms** | 184ms |
 | recursive `define` `-n` (101MB output) | 273ms | 267ms (tie) |
 | recursive `err(or\|no\|code)` `-l` | **140ms** | 153ms |
+
+### Assertions, -w, -U and globs (2026-09-15 regression report)
+
+A follow-up report found three cliffs and one correctness bug, all fixed:
+
+- **`\b` and `^`/`$` patterns** (3-4s per query) — any assertion forced the
+  PikeVM over whole buffers with no literal prefilter. Now: `\bLIT\b`
+  (and `-w LIT`) runs on the SIMD literal engine with one byte check per
+  side; other assertion patterns keep their literal prefilter (a line
+  carries the same neighbours as the buffer, so `^ $ \b \B` verify
+  per line exactly) and a *relaxed* DFA — the pattern with assertions
+  stripped — rejects candidate lines before the PikeVM runs. `^` and `$`
+  also now anchor per line in normal mode (`^#define` used to match only
+  a file's first line). See `regex.CompileMode`.
+- **`-U` with `-i`** (3.7s) — the stdlib engine has no prefilter under
+  `(?i)`. `-U` now uses the internal DFA in `regex.ModeMultiline`, where
+  a prefilter may anchor at match starts or gate whole buffers but never
+  confine verification to a line.
+- **Serial sorted walk** — see Directory Traversal above.
+- **`-g '*.py'` matched only top-level files** — include globs pruned
+  every subdirectory. Include globs now apply to files only; `/` globs
+  match the printed path with `**` (ripgrep's convention).
+
+Book corpus (835 Markdown files, 510MB), ms, report → now, vs rg:
+`\berror\b -i` 3701 → 85 (rg 33); `\bgo\s+func\s*\( -s` 3671 → 58
+(rg 25); `-U -i func main..defer` 3681 → 51 (rg 54). Python tree
+`-rc ImportError` 92 → 47 (rg 72, gogrep 56).
 
 The full optimization history lives in `education/10-closing-the-ripgrep-gap.md`
 and `education/11-beating-ripgrep.md`. Reproducible micro-benchmarks:

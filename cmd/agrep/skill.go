@@ -79,6 +79,10 @@ normal outcome, not a failure — pair it with --suggest.
 
 ## Precision queries
 
+- Whole words: -w wraps each pattern as \b(?:PATTERN)\b. A word search
+  for a literal (-w 'error', or '\berror\b' written out) runs on the
+  SIMD literal path and costs the same as the bare literal; -w composes
+  with -F and -i.
 - Identifiers: --ident treats the pattern as an identifier name —
   matches camelCase, snake_case, kebab-case, SCREAMING_SNAKE, flat,
   word-bounded (searching Match will not hit MatchSet):
@@ -134,7 +138,11 @@ normal outcome, not a failure — pair it with --suggest.
 - --with-file P / --without-file P — file-level conditions: report
   files matching the pattern that also/never contain P ("call sites
   not yet migrated"). Suppressed-file counts go to stderr, never lost.
-- -g GLOB include/exclude ('!x' excludes), --hidden, --no-ignore.
+- -g GLOB include/exclude ('!x' excludes), --hidden, --no-ignore. A
+  glob without '/' matches the base name at any depth ('*.py' finds
+  every Python file in the tree); with '/' it matches the path as
+  printed, '**' spanning directories ('src/**/*_test.go'). Include
+  globs never prune directories, only exclusions do ('!vendor').
 
 ## Repeated queries: --use-index
 

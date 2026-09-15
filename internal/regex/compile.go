@@ -460,10 +460,12 @@ func isASCIIPattern(re *syntax.Regexp) bool {
 	}
 }
 
-// isAnchored returns true if the pattern is anchored at the start.
+// isAnchored returns true if the pattern is anchored at the start of the
+// text. A per-line ^ (OpBeginLine) is not anchoring: it can hold at every
+// line start, so the engines must keep scanning past position 0.
 func isAnchored(re *syntax.Regexp) bool {
 	switch re.Op {
-	case syntax.OpBeginLine, syntax.OpBeginText:
+	case syntax.OpBeginText:
 		return true
 	case syntax.OpConcat:
 		return len(re.Sub) > 0 && isAnchored(re.Sub[0])

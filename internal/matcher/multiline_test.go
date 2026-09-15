@@ -72,3 +72,37 @@ func TestMultilineFixedStrings(t *testing.T) {
 		t.Error("fixed multiline pattern (QuoteMeta) should match literally")
 	}
 }
+
+// -U with -i must take the internal engine (the stdlib has no literal
+// prefilter under (?i)) and still agree with it.
+func TestMultilineCaseInsensitiveEngine(t *testing.T) {
+	m, err := NewMultilineMatcher([]string{`func main\(\) \{\n\s*defer`}, false, true, MatcherOpts{NeedLineNums: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, std := m.re.(stdMLEngine); std {
+		t.Fatal("ASCII -U -i pattern should use the internal engine")
+	}
+	data := []byte("x\nFUNC MAIN() {\n  defer f()\n}\nfunc main() {\n\tDEFER g()\n")
+	if got := m.CountAll(data); got != 2 {
+		t.Errorf("CountAll = %d, want 2", got)
+	}
+	ms := m.FindAll(data)
+	if len(ms.Matches) != 2 || ms.Matches[0].LineNum != 2 || ms.Matches[1].LineNum != 5 {
+		t.Errorf("matches = %+v", ms.Matches)
+	}
+	if !m.MatchExists(data) || m.MatchExists([]byte("func main() {\nno defer here\n")) {
+		t.Error("MatchExists wrong")
+	}
+	// Non-ASCII -i keeps the stdlib engine for Unicode folding.
+	u, err := NewMultilineMatcher([]string{`müller\n`}, false, true, MatcherOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, std := u.re.(stdMLEngine); !std {
+		t.Error("non-ASCII -U -i pattern should use the stdlib engine")
+	}
+	if !u.MatchExists([]byte("MÜLLER\nx")) {
+		t.Error("Unicode fold failed")
+	}
+}

@@ -201,7 +201,7 @@ func changedFiles(ref string, paths []string, globs []string) ([]string, error) 
 			if !underAnyPath(display, paths) {
 				continue
 			}
-			if !walker.MatchesGlobs(globs, filepath.Base(display)) {
+			if !walker.MatchesGlobs(globs, display) {
 				continue
 			}
 			list = append(list, display)

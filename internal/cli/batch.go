@@ -73,6 +73,9 @@ func runBatch(cfg Config, reader input.Reader, stdinReader input.Reader, formatt
 				fixed, pcre = false, false
 			}
 		}
+		if cfg.WordRegexp {
+			p, fixed = WordPattern(p, fixed), false
+		}
 		m, err := matcher.NewMatcher([]string{p}, fixed, pcre, ignoreCase, cfg.Invert, opts)
 		if err != nil {
 			logWarn("batch pattern %q: %v", p, err)

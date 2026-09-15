@@ -120,7 +120,7 @@ func Run(cfg Config) int {
 	if cfg.BatchFile == "" {
 		var err error
 		m, err = matcher.NewMatcherFromPipelines(
-			convertPipelines(cfg.Pipelines), cfg.IgnoreCase, cfg.Invert, opts,
+			convertPipelines(cfg.Pipelines, cfg.WordRegexp), cfg.IgnoreCase, cfg.Invert, opts,
 		)
 		if err != nil {
 			logWarn("invalid pattern: %v", err)
@@ -481,14 +481,18 @@ func runWatch(paths []string, m matcher.Matcher, formatter output.Formatter, w *
 }
 
 // convertPipelines converts cli.StageConfig to matcher.StageConfig.
-func convertPipelines(pipelines [][]StageConfig) [][]matcher.StageConfig {
+func convertPipelines(pipelines [][]StageConfig, word bool) [][]matcher.StageConfig {
 	result := make([][]matcher.StageConfig, len(pipelines))
 	for i, pipeline := range pipelines {
 		result[i] = make([]matcher.StageConfig, len(pipeline))
 		for j, s := range pipeline {
+			pattern, fixed := s.Pattern, s.Fixed
+			if word {
+				pattern, fixed = WordPattern(pattern, fixed), false
+			}
 			result[i][j] = matcher.StageConfig{
-				Pattern:   s.Pattern,
-				Fixed:     s.Fixed,
+				Pattern:   pattern,
+				Fixed:     fixed,
 				PCRE:      s.PCRE,
 				OnlyMatch: s.OnlyMatch,
 			}

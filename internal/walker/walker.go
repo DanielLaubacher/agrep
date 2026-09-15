@@ -1,16 +1,19 @@
 // Package walker traverses directory trees with raw getdents64,
 // classifying entries via d_type (no per-file stat), honoring .gitignore
 // stacks and glob filters, and skipping binary files by extension before
-// they are ever opened. Traversal is a single-producer sorted DFS:
-// entries are emitted in a deterministic order (name-sorted within each
-// directory) so repeated runs produce identical output — search workers
-// downstream provide the parallelism.
+// they are ever opened. Directories are listed by a parallel pool, but
+// files are emitted by a single goroutine in sorted-DFS order
+// (name-sorted within each directory), so repeated runs produce
+// identical output while the listing itself keeps up with the search
+// workers downstream.
 package walker
 
 import (
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -88,9 +91,17 @@ func Walk(roots []string, opts WalkOptions) (<-chan FileEntry, <-chan error) {
 			followSymlinks: opts.FollowSymlinks,
 			includeBinary:  opts.IncludeBinary,
 			globs:          opts.Globs,
-			buf:            make([]byte, 32*1024),
 		}
+		tw.cond = sync.NewCond(&tw.mu)
 
+		// Roots are resolved up front so directory listing can start
+		// on every root at once; emission below replays them in
+		// argument order.
+		type rootItem struct {
+			path string
+			node *dirNode
+		}
+		var items []rootItem
 		for _, root := range roots {
 			// A root that is a regular file is searched as-is —
 			// `agrep -r PAT file.txt dir/` must not fail on the file.
@@ -100,21 +111,33 @@ func Walk(roots []string, opts WalkOptions) (<-chan FileEntry, <-chan error) {
 				continue
 			}
 			if stat.Mode&unix.S_IFMT == unix.S_IFREG {
-				fileCh <- FileEntry{Path: root}
+				items = append(items, rootItem{path: root})
 				continue
 			}
 			var layers []ignoreLayer
 			if !opts.NoIgnore {
 				layers = []ignoreLayer{loadIgnoreLayer(root)}
 			}
-			tw.walkDir(root, layers)
+			node := newDirNode(root, layers)
+			tw.enqueue(node)
+			items = append(items, rootItem{node: node})
+		}
+
+		tw.startListers()
+		for _, it := range items {
+			if it.node == nil {
+				fileCh <- FileEntry{Path: it.path}
+				continue
+			}
+			tw.emit(it.node)
 		}
 	}()
 
 	return fileCh, errCh
 }
 
-// treeWalker holds traversal state for one Walk call.
+// treeWalker holds traversal state for one Walk call: a pool of
+// directory listers feeding a single in-order emitter.
 type treeWalker struct {
 	fileCh         chan<- FileEntry
 	errCh          chan<- error
@@ -124,35 +147,141 @@ type treeWalker struct {
 	includeBinary  bool
 	globs          []string
 
-	buf     []byte   // getdents buffer, reused across directories
-	scratch []Dirent // per-batch parse buffer, reused across directories
+	mu      sync.Mutex
+	cond    *sync.Cond // signaled when a directory is queued or the walk is done
+	queue   []*dirNode // directories awaiting listing (LIFO: stays near the emitter's DFS position)
+	pending int        // directories queued or being listed
+	done    bool       // no directory left to list
 }
 
-// walkDir reads one directory, sorts its entries by name, and processes
-// them in order — emitting files and recursing into subdirectories at
-// their sorted position. The deterministic order is a correctness
-// contract: output sequence numbers downstream derive from emission
-// order, so budgeted or truncated output must not vary between runs.
-// The directory fd is closed before recursing.
-func (tw *treeWalker) walkDir(path string, ignores []ignoreLayer) {
+// dirNode is one directory's listing. Listers fill items/errs and close
+// ready; the emitter waits on ready and replays items in order. Items
+// are already sorted, filtered, and classified, so the emitter does no
+// syscalls — it only sends.
+type dirNode struct {
+	path    string
+	ignores []ignoreLayer
+	ready   chan struct{}
+	items   []dirItem
+	errs    []error
+}
+
+// dirItem is a sorted-position entry: a file path, or a subdirectory
+// whose subtree is emitted at this position.
+type dirItem struct {
+	path  string
+	child *dirNode
+}
+
+func newDirNode(path string, ignores []ignoreLayer) *dirNode {
+	return &dirNode{path: path, ignores: ignores, ready: make(chan struct{})}
+}
+
+// startListers launches the directory-listing pool. It exits on its own
+// once every queued directory has been listed.
+func (tw *treeWalker) startListers() {
+	for range runtime.NumCPU() {
+		go tw.lister()
+	}
+}
+
+// enqueue queues a directory for listing.
+func (tw *treeWalker) enqueue(n *dirNode) {
+	tw.mu.Lock()
+	tw.queue = append(tw.queue, n)
+	tw.pending++
+	tw.mu.Unlock()
+	tw.cond.Signal()
+}
+
+// dequeue returns the next directory to list, blocking while the queue
+// is temporarily empty. Returns false once the walk is complete.
+func (tw *treeWalker) dequeue() (*dirNode, bool) {
+	tw.mu.Lock()
+	for len(tw.queue) == 0 && !tw.done {
+		tw.cond.Wait()
+	}
+	if tw.done && len(tw.queue) == 0 {
+		tw.mu.Unlock()
+		return nil, false
+	}
+	n := tw.queue[len(tw.queue)-1]
+	tw.queue = tw.queue[:len(tw.queue)-1]
+	tw.mu.Unlock()
+	return n, true
+}
+
+// finish marks one directory as listed.
+func (tw *treeWalker) finish() {
+	tw.mu.Lock()
+	tw.pending--
+	if tw.pending == 0 && len(tw.queue) == 0 {
+		tw.done = true
+		tw.cond.Broadcast()
+	}
+	tw.mu.Unlock()
+}
+
+// lister lists directories from the queue until the walk is complete.
+func (tw *treeWalker) lister() {
+	buf := make([]byte, 32*1024) // per-lister getdents buffer
+	var scratch []Dirent         // per-lister dirent parse buffer
+	for {
+		n, ok := tw.dequeue()
+		if !ok {
+			return
+		}
+		scratch = tw.list(n, buf, scratch)
+		tw.finish()
+	}
+}
+
+// emit replays a listed directory in order: files are sent at their
+// sorted position and subdirectories are emitted recursively at theirs.
+// The order is a correctness contract: output sequence numbers
+// downstream derive from emission order, so budgeted or truncated
+// output must not vary between runs.
+func (tw *treeWalker) emit(n *dirNode) {
+	<-n.ready
+	for _, err := range n.errs {
+		tw.errCh <- err
+	}
+	for _, it := range n.items {
+		if it.child != nil {
+			tw.emit(it.child)
+		} else {
+			tw.fileCh <- FileEntry{Path: it.path}
+		}
+	}
+}
+
+// list reads one directory, sorts its entries by name, and classifies
+// them into n.items, then queues its subdirectories for listing in
+// reverse order so the LIFO queue hands the emitter's next directory to
+// a lister first. The directory fd is closed before returning. Returns
+// the scratch slice for reuse.
+func (tw *treeWalker) list(n *dirNode, buf []byte, scratch []Dirent) []Dirent {
+	defer close(n.ready)
+	path, ignores := n.path, n.ignores
+
 	fd, err := openDir(path)
 	if err != nil {
-		tw.errCh <- &WalkError{Path: path, Err: err}
-		return
+		n.errs = append(n.errs, &WalkError{Path: path, Err: err})
+		return scratch
 	}
 
 	var entries []Dirent
 	for {
-		n, err := unix.Getdents(fd, tw.buf)
+		cnt, err := unix.Getdents(fd, buf)
 		if err != nil {
-			tw.errCh <- &WalkError{Path: path, Err: err}
+			n.errs = append(n.errs, &WalkError{Path: path, Err: err})
 			break
 		}
-		if n == 0 {
+		if cnt == 0 {
 			break
 		}
-		tw.scratch = ParseDirents(tw.buf, n, tw.scratch)
-		entries = append(entries, tw.scratch...)
+		scratch = ParseDirents(buf, cnt, scratch)
+		entries = append(entries, scratch...)
 	}
 	unix.Close(fd)
 
@@ -185,7 +314,7 @@ func (tw *treeWalker) walkDir(path string, ignores []ignoreLayer) {
 		case DT_UNKNOWN:
 			var stat unix.Stat_t
 			if err := unix.Stat(fullPath, &stat); err != nil {
-				tw.errCh <- &WalkError{Path: fullPath, Err: err}
+				n.errs = append(n.errs, &WalkError{Path: fullPath, Err: err})
 				continue
 			}
 			switch stat.Mode & unix.S_IFMT {
@@ -206,7 +335,7 @@ func (tw *treeWalker) walkDir(path string, ignores []ignoreLayer) {
 			if ignores != nil && isIgnoredByLayers(ignores, fullPath, true) {
 				continue
 			}
-			if tw.isGlobExcluded(entry.Name) {
+			if tw.globExcludes(fullPath, entry.Name, true) {
 				continue
 			}
 			// Child ignore layers: parent stack + this dir's .gitignore.
@@ -216,7 +345,7 @@ func (tw *treeWalker) walkDir(path string, ignores []ignoreLayer) {
 				copy(childIgnores, ignores)
 				childIgnores[len(ignores)] = loadIgnoreLayer(fullPath)
 			}
-			tw.walkDir(fullPath, childIgnores)
+			n.items = append(n.items, dirItem{child: newDirNode(fullPath, childIgnores)})
 
 		case DT_REG:
 			if !tw.hidden && len(entry.Name) > 0 && entry.Name[0] == '.' {
@@ -228,12 +357,18 @@ func (tw *treeWalker) walkDir(path string, ignores []ignoreLayer) {
 			if ignores != nil && isIgnoredByLayers(ignores, fullPath, false) {
 				continue
 			}
-			if tw.isGlobExcluded(entry.Name) {
+			if tw.globExcludes(fullPath, entry.Name, false) {
 				continue
 			}
-			tw.fileCh <- FileEntry{Path: fullPath}
+			n.items = append(n.items, dirItem{path: fullPath})
 		}
 	}
+	for i := len(n.items) - 1; i >= 0; i-- {
+		if c := n.items[i].child; c != nil {
+			tw.enqueue(c)
+		}
+	}
+	return scratch
 }
 
 // joinPath concatenates a directory and entry name with a single separator.
@@ -271,12 +406,20 @@ func skipDir(name string, hidden bool) bool {
 	return false
 }
 
-// isGlobExcluded checks if a filename matches any glob exclusion patterns.
-// Globs prefixed with ! are exclusion patterns; others are inclusion patterns.
-// If only exclusion patterns exist, a file is excluded if it matches any exclusion.
-// If any inclusion patterns exist, a file must match at least one inclusion AND not
-// match any exclusion.
-func (tw *treeWalker) isGlobExcluded(name string) bool {
+// globExcludes applies the include/exclude globs to one entry. Globs
+// prefixed with ! exclude; the rest include. A file is excluded when it
+// matches any exclusion, or when inclusions exist and it matches none.
+// Directories are pruned only by exclusions — an include glob such as
+// '*.py' names files, so a directory that fails it must still be
+// descended to reach the files inside (report bug 4: '-g *.py' used to
+// prune every subdirectory and match only the top level).
+//
+// A glob without '/' matches the base name at any depth; one with '/'
+// matches the path as agrep prints it (the search root joined to the
+// entry, so cwd-relative for a relative root — ripgrep's convention),
+// where '**' spans any number of directories ('src/**/*.go'). A leading
+// './' on either side is ignored.
+func (tw *treeWalker) globExcludes(path, name string, isDir bool) bool {
 	if len(tw.globs) == 0 {
 		return false
 	}
@@ -285,24 +428,54 @@ func (tw *treeWalker) isGlobExcluded(name string) bool {
 	included := false
 	for _, g := range tw.globs {
 		if strings.HasPrefix(g, "!") {
-			// Exclusion glob
-			pattern := g[1:]
-			if matchGlob(pattern, name) {
+			if matchPathGlob(g[1:], path, name) {
 				return true
 			}
-		} else {
-			// Inclusion glob
-			hasIncludes = true
-			if matchGlob(g, name) {
-				included = true
-			}
+			continue
+		}
+		if isDir {
+			continue
+		}
+		hasIncludes = true
+		if !included && matchPathGlob(g, path, name) {
+			included = true
 		}
 	}
+	return hasIncludes && !included
+}
 
-	if hasIncludes && !included {
-		return true
+// matchPathGlob matches one glob against an entry given its printed path
+// and base name (see globExcludes for the semantics).
+func matchPathGlob(pattern, path, name string) bool {
+	pattern = strings.TrimPrefix(pattern, "./")
+	if !strings.Contains(pattern, "/") {
+		return matchGlob(pattern, name)
 	}
-	return false
+	if rest, ok := strings.CutPrefix(pattern, "**/"); ok && !strings.Contains(rest, "/") {
+		return matchGlob(rest, name)
+	}
+	path = strings.TrimPrefix(path, "./")
+	return matchGlobSegments(strings.Split(pattern, "/"), strings.Split(path, "/"))
+}
+
+// matchGlobSegments matches path segments against pattern segments, where
+// a "**" segment matches zero or more path segments.
+func matchGlobSegments(pat, path []string) bool {
+	for len(pat) > 0 {
+		if pat[0] == "**" {
+			for i := 0; i <= len(path); i++ {
+				if matchGlobSegments(pat[1:], path[i:]) {
+					return true
+				}
+			}
+			return false
+		}
+		if len(path) == 0 || !matchGlob(pat[0], path[0]) {
+			return false
+		}
+		pat, path = pat[1:], path[1:]
+	}
+	return len(path) == 0
 }
 
 // matchGlob matches a name against a glob pattern.
@@ -346,9 +519,10 @@ func (e *WalkError) Unwrap() error {
 }
 
 // MatchesGlobs applies include/exclude globs (prefix ! to exclude) to a
-// base name, with the same semantics the walker uses during traversal.
-// Exported for file sources that bypass the walk (--changed-since).
-func MatchesGlobs(globs []string, name string) bool {
+// file's printed path, with the same semantics the walker uses during
+// traversal. Exported for file sources that bypass the walk
+// (--changed-since).
+func MatchesGlobs(globs []string, path string) bool {
 	tw := &treeWalker{globs: globs}
-	return !tw.isGlobExcluded(name)
+	return !tw.globExcludes(path, filepath.Base(path), false)
 }
