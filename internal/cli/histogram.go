@@ -8,6 +8,7 @@ package cli
 // completion and totals are exact.
 
 import (
+	"bytes"
 	"sort"
 	"strconv"
 
@@ -24,23 +25,66 @@ type histEntry struct {
 	files int // files containing at least one occurrence
 }
 
-// histAccum aggregates matched-span texts across files.
+// histAccum aggregates matched-span texts across files. With a capture
+// selector (-S holes), the named hole's bound text is counted instead
+// of the full matched span — "histogram of the first argument to
+// NewClient(...)" as one query.
 type histAccum struct {
-	counts map[string]*histEntry
+	counts  map[string]*histEntry
+	capture string // hole name to aggregate ("" = first named hole, else spans)
 }
 
-func newHistAccum() *histAccum {
-	return &histAccum{counts: make(map[string]*histEntry)}
+func newHistAccum(capture string) *histAccum {
+	return &histAccum{counts: make(map[string]*histEntry), capture: capture}
+}
+
+func (h *histAccum) add(text []byte, inFile map[string]bool) {
+	if len(text) > histogramTextMax {
+		text = text[:histogramTextMax]
+	}
+	ent := h.counts[string(text)]
+	if ent == nil {
+		ent = &histEntry{}
+		h.counts[string(text)] = ent
+	}
+	ent.count++
+	if !inFile[string(text)] {
+		inFile[string(text)] = true
+		ent.files++
+	}
+}
+
+// captureText picks the selected hole's binding for match i, or nil.
+func (h *histAccum) captureText(ms *matcher.MatchSet, i int) []byte {
+	for _, c := range ms.MatchCaptures(i) {
+		if h.capture != "" {
+			if c.Name == h.capture {
+				return ms.Data[c.Start:c.End]
+			}
+			continue
+		}
+		if c.Name != "_" {
+			return ms.Data[c.Start:c.End] // first named hole
+		}
+	}
+	return nil
 }
 
 // addResult folds one file's matches into the histogram.
 func (h *histAccum) addResult(r *output.Result) {
 	ms := &r.MatchSet
-	var inFile map[string]bool
+	inFile := make(map[string]bool)
 	for i := range ms.Matches {
 		m := &ms.Matches[i]
 		if m.IsContext || m.LineStart < 0 || m.PosCount == 0 {
 			continue
+		}
+		if m.CapCount > 0 {
+			if text := h.captureText(ms, i); text != nil {
+				h.add(bytes.TrimSpace(text), inFile)
+				continue
+			}
+			continue // capture selected but this match lacks it
 		}
 		line := ms.Data[m.LineStart : m.LineStart+m.LineLen]
 		for _, pos := range ms.MatchPositions(i) {
@@ -51,23 +95,7 @@ func (h *histAccum) addResult(r *output.Result) {
 			if e > len(line) {
 				e = len(line)
 			}
-			text := line[s:e]
-			if len(text) > histogramTextMax {
-				text = text[:histogramTextMax]
-			}
-			ent := h.counts[string(text)]
-			if ent == nil {
-				ent = &histEntry{}
-				h.counts[string(text)] = ent
-			}
-			ent.count++
-			if inFile == nil {
-				inFile = make(map[string]bool)
-			}
-			if !inFile[string(text)] {
-				inFile[string(text)] = true
-				ent.files++
-			}
+			h.add(line[s:e], inFile)
 		}
 	}
 }
@@ -75,7 +103,7 @@ func (h *histAccum) addResult(r *output.Result) {
 // runHistogram searches like a normal query but reports the distinct
 // matched texts with counts, most frequent first.
 func runHistogram(paths []string, m matcher.Matcher, reader input.Reader, stdinReader input.Reader, w *output.Writer, cfg Config) int {
-	acc := newHistAccum()
+	acc := newHistAccum(cfg.Capture)
 
 	if len(paths) == 0 && cfg.FilesFrom == "" && cfg.ChangedSince == "" {
 		r := searchReader(stdinReader, "", m, searchFull, false)
