@@ -17,7 +17,6 @@ type AhoCorasickMatcher struct {
 	patterns     [][]byte // original patterns
 	ignoreCase   bool
 	invert       bool
-	maxCols      int
 	needLineNums bool
 }
 
@@ -233,7 +232,7 @@ func (m *AhoCorasickMatcher) FindAll(data []byte) MatchSet {
 	if len(locs) == 0 {
 		return MatchSet{}
 	}
-	return matchSetFromLocs(data, locs, m.maxCols, m.needLineNums)
+	return matchSetFromLocs(data, locs, m.needLineNums)
 }
 
 func (m *AhoCorasickMatcher) findAllInvert(data []byte) MatchSet {

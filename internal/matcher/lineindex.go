@@ -2,80 +2,58 @@ package matcher
 
 import "bytes"
 
-// snippetFromOffset extracts a line snippet around a match at off in data.
-// Instead of resolving full line boundaries (which may be thousands of bytes
-// away), it looks at most maxCols bytes in each direction and clamps at '\n'.
-// Returns the snippet start offset and length within data.
-//
-// When maxCols <= 0, full line boundaries are resolved (no truncation).
-func snippetFromOffset(data []byte, off int, maxCols int) (snippetStart int, snippetLen int, posInSnippet int) {
-	n := len(data)
-
-	// Determine search bounds
-	var lo, hi int
-	if maxCols > 0 {
-		lo = max(off-maxCols, 0)
-		hi = min(off+maxCols, n)
-	} else {
-		lo = 0
-		hi = n
+// lineBoundsFromOffset resolves the full line containing off: the byte
+// after the previous '\n' (or 0) through the next '\n' (or EOF), exclusive.
+// Line-accurate bounds are a correctness contract — JSON span/region ids
+// and line totals derive from them. Display truncation (-M) happens in the
+// output layer only. Callers cache the result per line so a line with many
+// matches is resolved once, keeping total cost O(len(data)).
+func lineBoundsFromOffset(data []byte, off int) (lineStart, lineEnd int) {
+	lineStart = 0
+	if i := bytes.LastIndexByte(data[:off], '\n'); i >= 0 {
+		lineStart = i + 1
 	}
-
-	// Find line start: last '\n' before off within [lo, off)
-	lineStart := lo
-	if i := bytes.LastIndexByte(data[lo:off], '\n'); i >= 0 {
-		lineStart = lo + i + 1
-	}
-
-	// Find line end: first '\n' at or after off within [off, hi)
-	lineEnd := hi
-	if i := bytes.IndexByte(data[off:hi], '\n'); i >= 0 {
+	lineEnd = len(data)
+	if i := bytes.IndexByte(data[off:], '\n'); i >= 0 {
 		lineEnd = off + i
 	}
-
-	return lineStart, lineEnd - lineStart, off - lineStart
+	return lineStart, lineEnd
 }
 
 // matchSetFromOffsets converts fixed-length match offsets to a MatchSet.
-// Uses window-based snippet extraction (bounded by maxCols) and incremental
-// bytes.Count for line numbers. O(1) pointer overhead, O(n) total time.
-func matchSetFromOffsets(data []byte, offsets []int, patternLen int, maxCols int, needLineNums bool) MatchSet {
+// One Match per line (full line bounds), incremental bytes.Count for line
+// numbers. O(1) pointer overhead, O(n) total time.
+func matchSetFromOffsets(data []byte, offsets []int, patternLen int, needLineNums bool) MatchSet {
 	if len(offsets) == 0 {
 		return MatchSet{}
 	}
 
 	matches := make([]Match, 0, len(offsets))
 	positions := make([][2]int, 0, len(offsets))
-	lastSnippetStart := -1
+	curLineStart, curLineEnd := 0, -1
 	lineNum := 1
 	prevOff := 0
 
 	for _, off := range offsets {
-		snippetStart, snippetLen, posInSnippet := snippetFromOffset(data, off, maxCols)
-
-		if needLineNums {
-			lineNum += bytes.Count(data[prevOff:off], []byte{'\n'})
-			prevOff = off
-		}
-
-		posIdx := len(positions)
-		positions = append(positions, [2]int{posInSnippet, posInSnippet + patternLen})
-
-		if snippetStart == lastSnippetStart {
-			// Same line as previous match — extend its position range
-			last := &matches[len(matches)-1]
-			last.PosCount = posIdx - last.PosIdx + 1
-		} else {
+		if off > curLineEnd {
+			curLineStart, curLineEnd = lineBoundsFromOffset(data, off)
+			if needLineNums {
+				lineNum += bytes.Count(data[prevOff:off], []byte{'\n'})
+				prevOff = off
+			}
 			matches = append(matches, Match{
 				LineNum:    lineNum,
-				LineStart:  snippetStart,
-				LineLen:    snippetLen,
-				ByteOffset: int64(snippetStart),
-				PosIdx:     posIdx,
+				LineStart:  curLineStart,
+				LineLen:    curLineEnd - curLineStart,
+				ByteOffset: int64(curLineStart),
+				PosIdx:     len(positions),
 				PosCount:   1,
 			})
-			lastSnippetStart = snippetStart
+		} else {
+			matches[len(matches)-1].PosCount++
 		}
+		pos := off - curLineStart
+		positions = append(positions, [2]int{pos, min(pos+patternLen, curLineEnd-curLineStart)})
 	}
 
 	return MatchSet{Data: data, Matches: matches, Positions: positions}
@@ -84,46 +62,43 @@ func matchSetFromOffsets(data []byte, offsets []int, patternLen int, maxCols int
 // matchSetFromLocs converts match locations (as [2]int{start, end}) to a MatchSet.
 // It reuses the locs slice in-place for positions (converting buffer-absolute offsets
 // to snippet-relative offsets), eliminating one allocation.
-func matchSetFromLocs(data []byte, locs [][2]int, maxCols int, needLineNums bool) MatchSet {
+func matchSetFromLocs(data []byte, locs [][2]int, needLineNums bool) MatchSet {
 	if len(locs) == 0 {
 		return MatchSet{}
 	}
 
 	matches := make([]Match, 0, len(locs))
-	lastSnippetStart := -1
+	curLineStart, curLineEnd := 0, -1
 	lineNum := 1
 	prevOff := 0
 
 	for i, loc := range locs {
 		matchStart, matchEnd := loc[0], loc[1]
 
-		snippetStart, snippetLen, posInSnippet := snippetFromOffset(data, matchStart, maxCols)
-
-		if needLineNums {
-			lineNum += bytes.Count(data[prevOff:matchStart], []byte{'\n'})
-			prevOff = matchStart
-		}
-
-		posEnd := min(posInSnippet+(matchEnd-matchStart), snippetLen)
-
-		// Overwrite locs[i] in-place with snippet-relative position.
-		// Safe because we already read loc above and iteration is forward-only.
-		locs[i] = [2]int{posInSnippet, posEnd}
-
-		if snippetStart == lastSnippetStart {
-			last := &matches[len(matches)-1]
-			last.PosCount = i - last.PosIdx + 1
-		} else {
+		if matchStart > curLineEnd {
+			curLineStart, curLineEnd = lineBoundsFromOffset(data, matchStart)
+			if needLineNums {
+				lineNum += bytes.Count(data[prevOff:matchStart], []byte{'\n'})
+				prevOff = matchStart
+			}
 			matches = append(matches, Match{
 				LineNum:    lineNum,
-				LineStart:  snippetStart,
-				LineLen:    snippetLen,
-				ByteOffset: int64(snippetStart),
+				LineStart:  curLineStart,
+				LineLen:    curLineEnd - curLineStart,
+				ByteOffset: int64(curLineStart),
 				PosIdx:     i,
 				PosCount:   1,
 			})
-			lastSnippetStart = snippetStart
+		} else {
+			matches[len(matches)-1].PosCount++
 		}
+
+		pos := matchStart - curLineStart
+		posEnd := min(pos+(matchEnd-matchStart), curLineEnd-curLineStart)
+
+		// Overwrite locs[i] in-place with line-relative position.
+		// Safe because we already read loc above and iteration is forward-only.
+		locs[i] = [2]int{pos, posEnd}
 	}
 
 	return MatchSet{Data: data, Matches: matches, Positions: locs}
@@ -135,53 +110,48 @@ func matchSetFromLocs(data []byte, locs [][2]int, maxCols int, needLineNums bool
 // second cold pass over buffers larger than L3 (the streaming counterpart
 // of matchSetFromLocs).
 type matchSetBuilder struct {
-	data             []byte
-	maxCols          int
-	needLineNums     bool
-	matches          []Match
-	positions        [][2]int
-	lastSnippetStart int
-	lineNum          int
-	prevOff          int
+	data         []byte
+	needLineNums bool
+	matches      []Match
+	positions    [][2]int
+	curLineStart int
+	curLineEnd   int
+	lineNum      int
+	prevOff      int
 }
 
-func newMatchSetBuilder(data []byte, maxCols int, needLineNums bool) matchSetBuilder {
+func newMatchSetBuilder(data []byte, needLineNums bool) matchSetBuilder {
 	return matchSetBuilder{
-		data:             data,
-		maxCols:          maxCols,
-		needLineNums:     needLineNums,
-		lastSnippetStart: -1,
-		lineNum:          1,
+		data:         data,
+		needLineNums: needLineNums,
+		curLineEnd:   -1,
+		lineNum:      1,
 	}
 }
 
 // add records one match location; the signature matches regex.FindAllIndexFunc.
 func (b *matchSetBuilder) add(matchStart, matchEnd int) bool {
-	snippetStart, snippetLen, posInSnippet := snippetFromOffset(b.data, matchStart, b.maxCols)
-
-	if b.needLineNums {
-		b.lineNum += bytes.Count(b.data[b.prevOff:matchStart], []byte{'\n'})
-		b.prevOff = matchStart
-	}
-
-	posEnd := min(posInSnippet+(matchEnd-matchStart), snippetLen)
-	posIdx := len(b.positions)
-	b.positions = append(b.positions, [2]int{posInSnippet, posEnd})
-
-	if snippetStart == b.lastSnippetStart {
-		last := &b.matches[len(b.matches)-1]
-		last.PosCount = posIdx - last.PosIdx + 1
-	} else {
+	if matchStart > b.curLineEnd {
+		b.curLineStart, b.curLineEnd = lineBoundsFromOffset(b.data, matchStart)
+		if b.needLineNums {
+			b.lineNum += bytes.Count(b.data[b.prevOff:matchStart], []byte{'\n'})
+			b.prevOff = matchStart
+		}
 		b.matches = append(b.matches, Match{
 			LineNum:    b.lineNum,
-			LineStart:  snippetStart,
-			LineLen:    snippetLen,
-			ByteOffset: int64(snippetStart),
-			PosIdx:     posIdx,
+			LineStart:  b.curLineStart,
+			LineLen:    b.curLineEnd - b.curLineStart,
+			ByteOffset: int64(b.curLineStart),
+			PosIdx:     len(b.positions),
 			PosCount:   1,
 		})
-		b.lastSnippetStart = snippetStart
+	} else {
+		b.matches[len(b.matches)-1].PosCount++
 	}
+
+	pos := matchStart - b.curLineStart
+	posEnd := min(pos+(matchEnd-matchStart), b.curLineEnd-b.curLineStart)
+	b.positions = append(b.positions, [2]int{pos, posEnd})
 	return true
 }
 

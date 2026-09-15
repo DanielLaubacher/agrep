@@ -51,8 +51,41 @@ func (p *PipelineMatcher) FindAll(data []byte) MatchSet {
 	return p.filterAndRematch(data, ms)
 }
 
-// filterAndRematch takes the lines matched by stage 0 and runs stages 1..N
-// on each line. The final stage's match positions define the output.
+// narrowLine runs stages 1..N over one line, each stage searching only
+// within the previous stage's matched fragments (stage 0's fragment is
+// the whole line). Returns the final stage's fragments as line-relative
+// positions, or nil if any stage found nothing — the staged-narrowing
+// contract from the skill text: "-t pipes each stage's matched text into
+// the next pattern."
+func (p *PipelineMatcher) narrowLine(lineBytes []byte) [][2]int {
+	regions := [][2]int{{0, len(lineBytes)}}
+	for stageIdx := 1; stageIdx < len(p.stages); stageIdx++ {
+		var next [][2]int
+		for _, r := range regions {
+			sub := lineBytes[r[0]:r[1]]
+			sms := p.stages[stageIdx].FindAll(sub)
+			for j := range sms.Matches {
+				sm := &sms.Matches[j]
+				if sm.IsContext || sm.LineStart < 0 {
+					continue
+				}
+				base := r[0] + sm.LineStart
+				for _, pos := range sms.MatchPositions(j) {
+					next = append(next, [2]int{base + pos[0], base + pos[1]})
+				}
+			}
+		}
+		if len(next) == 0 {
+			return nil
+		}
+		regions = next
+	}
+	return regions
+}
+
+// filterAndRematch takes the lines matched by stage 0 and narrows each
+// through stages 1..N. The final stage's fragments define the output
+// highlights (and the emitted text under -o).
 func (p *PipelineMatcher) filterAndRematch(data []byte, ms0 MatchSet) MatchSet {
 	var resultMatches []Match
 	var resultPositions [][2]int
@@ -64,59 +97,21 @@ func (p *PipelineMatcher) filterAndRematch(data []byte, ms0 MatchSet) MatchSet {
 		}
 
 		lineBytes := ms0.Data[m.LineStart : m.LineStart+m.LineLen]
-
-		// Run stages 1..N-1 as filters (just need to match)
-		survived := true
-		for stageIdx := 1; stageIdx < len(p.stages)-1; stageIdx++ {
-			if !p.stages[stageIdx].MatchExists(lineBytes) {
-				survived = false
-				break
-			}
-		}
-		if !survived {
+		regions := p.narrowLine(lineBytes)
+		if len(regions) == 0 {
 			continue
 		}
 
-		// Final stage: get match positions
-		finalStage := p.stages[len(p.stages)-1]
-		finalMS := finalStage.FindAll(lineBytes)
-		if !finalMS.HasMatch() {
-			continue
-		}
-
-		// Collect matches from final stage, rebased to original buffer offsets
-		for j := range finalMS.Matches {
-			fm := &finalMS.Matches[j]
-			if fm.IsContext || fm.LineStart < 0 {
-				continue
-			}
-
-			fPositions := finalMS.MatchPositions(j)
-			posIdx := len(resultPositions)
-
-			for _, fp := range fPositions {
-				// Positions are relative to lineBytes (which starts at m.LineStart)
-				resultPositions = append(resultPositions, [2]int{fp[0], fp[1]})
-			}
-
-			// Check if we can merge with previous result match on same line
-			if len(resultMatches) > 0 {
-				last := &resultMatches[len(resultMatches)-1]
-				if last.LineStart == m.LineStart {
-					last.PosCount = len(resultPositions) - last.PosIdx
-					continue
-				}
-			}
-
-			resultMatches = append(resultMatches, Match{
-				LineNum:    m.LineNum,
-				LineStart:  m.LineStart,
-				LineLen:    m.LineLen,
-				ByteOffset: m.ByteOffset,
-				PosIdx:     posIdx,
-				PosCount:   len(fPositions),
-			})
-		}
+		posIdx := len(resultPositions)
+		resultPositions = append(resultPositions, regions...)
+		resultMatches = append(resultMatches, Match{
+			LineNum:    m.LineNum,
+			LineStart:  m.LineStart,
+			LineLen:    m.LineLen,
+			ByteOffset: m.ByteOffset,
+			PosIdx:     posIdx,
+			PosCount:   len(regions),
+		})
 	}
 
 	if len(resultMatches) == 0 {
@@ -152,15 +147,7 @@ func (p *PipelineMatcher) MatchExists(data []byte) bool {
 		}
 
 		lineBytes := ms.Data[m.LineStart : m.LineStart+m.LineLen]
-
-		survived := true
-		for stageIdx := 1; stageIdx < len(p.stages); stageIdx++ {
-			if !p.stages[stageIdx].MatchExists(lineBytes) {
-				survived = false
-				break
-			}
-		}
-		if survived {
+		if len(p.narrowLine(lineBytes)) > 0 {
 			return true
 		}
 	}
@@ -188,20 +175,31 @@ func (p *PipelineMatcher) FindLine(line []byte, lineNum int, byteOffset int64) (
 	}
 
 	// Stage 0: check if line matches
-	_, ok := p.stages[0].FindLine(line, lineNum, byteOffset)
+	ms0, ok := p.stages[0].FindLine(line, lineNum, byteOffset)
 	if !ok {
 		return MatchSet{}, false
 	}
-
-	// Stages 1..N-1: filter
-	for stageIdx := 1; stageIdx < len(p.stages)-1; stageIdx++ {
-		if !p.stages[stageIdx].MatchExists(line) {
-			return MatchSet{}, false
-		}
+	if len(p.stages) == 1 {
+		return ms0, true
 	}
 
-	// Final stage: get positions
-	return p.stages[len(p.stages)-1].FindLine(line, lineNum, byteOffset)
+	// Stages 1..N: narrow within the previous stage's fragments.
+	regions := p.narrowLine(line)
+	if len(regions) == 0 {
+		return MatchSet{}, false
+	}
+	return MatchSet{
+		Data: line,
+		Matches: []Match{{
+			LineNum:    lineNum,
+			LineStart:  0,
+			LineLen:    len(line),
+			ByteOffset: byteOffset,
+			PosIdx:     0,
+			PosCount:   len(regions),
+		}},
+		Positions: regions,
+	}, true
 }
 
 // MultiPipelineMatcher runs multiple pipelines (OR'd) and merges results.

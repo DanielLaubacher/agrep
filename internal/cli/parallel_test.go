@@ -45,7 +45,7 @@ func TestParallelFindAllMatchesSequential(t *testing.T) {
 	for _, tc := range patterns {
 		for _, lineNums := range []bool{false, true} {
 			m, err := matcher.NewMatcher([]string{tc.pattern}, tc.fixed, false, false, false,
-				matcher.MatcherOpts{MaxCols: 75, NeedLineNums: lineNums})
+				matcher.MatcherOpts{NeedLineNums: lineNums})
 			if err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
 			}

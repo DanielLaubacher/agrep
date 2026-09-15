@@ -74,9 +74,42 @@ func TestPipelineMatcher_ThreeStageNarrowing(t *testing.T) {
 	}
 }
 
-func TestPipelineMatcher_ThreeStageAllDigits(t *testing.T) {
-	// Verify that the final stage finds ALL matches on the line
-	// -Fe 'HTTP' -te 'status' -toe '\d+'
+func TestPipelineMatcher_ThreeStageFragmentExtraction(t *testing.T) {
+	// Staged narrowing (report bug 5): each -t stage searches only the
+	// previous stage's matched fragments, so the final \d+ must extract
+	// "350" from "timeout=350" — never "127" from elsewhere on the line.
+	// -e 'ERROR' -te 'timeout=\d+' -toe '\d+'
+	stages := []StageConfig{
+		{Pattern: "ERROR"},
+		{Pattern: `timeout=\d+`},
+		{Pattern: `\d+`, OnlyMatch: true},
+	}
+	m, err := NewMatcherFromPipelines([][]StageConfig{stages}, false, false, MatcherOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := []byte("ERROR conn reset 127.0.0.1 timeout=350ms\nINFO timeout=99ms\n")
+	ms := m.FindAll(data)
+
+	if ms.Len() != 1 {
+		t.Fatalf("got %d matches, want 1 (INFO line filtered by stage 0)", ms.Len())
+	}
+
+	var fragments []string
+	lineBytes := ms.LineBytes(0)
+	for _, pos := range ms.MatchPositions(0) {
+		fragments = append(fragments, string(lineBytes[pos[0]:pos[1]]))
+	}
+	if len(fragments) != 1 || fragments[0] != "350" {
+		t.Errorf("narrowed fragments = %v, want [350]", fragments)
+	}
+}
+
+func TestPipelineMatcher_IntermediateStageMustHitFragment(t *testing.T) {
+	// A stage whose fragment contains no material for the next stage
+	// kills the line: 'status' narrows to the literal text "status",
+	// which has no digits.
 	stages := []StageConfig{
 		{Pattern: "HTTP", Fixed: true},
 		{Pattern: `status`},
@@ -86,34 +119,8 @@ func TestPipelineMatcher_ThreeStageAllDigits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	data := []byte("HTTP/1.1 status=200 OK\n")
-	ms := m.FindAll(data)
-
-	if ms.Len() == 0 {
-		t.Fatal("expected at least 1 match")
-	}
-
-	// Final stage \d+ finds all digit sequences on the line: "1", "1", "200"
-	var allDigits []string
-	for i := range ms.Matches {
-		lineBytes := ms.LineBytes(i)
-		for _, pos := range ms.MatchPositions(i) {
-			allDigits = append(allDigits, string(lineBytes[pos[0]:pos[1]]))
-		}
-	}
-	if len(allDigits) < 1 {
-		t.Error("expected at least 1 digit match")
-	}
-	// Should contain "200"
-	found200 := false
-	for _, d := range allDigits {
-		if d == "200" {
-			found200 = true
-		}
-	}
-	if !found200 {
-		t.Errorf("expected to find '200' in digits, got %v", allDigits)
+	if ms := m.FindAll([]byte("HTTP/1.1 status=200 OK\n")); ms.Len() != 0 {
+		t.Errorf("got %d matches, want 0 (fragment %q has no digits)", ms.Len(), "status")
 	}
 }
 

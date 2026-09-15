@@ -4,6 +4,9 @@ package matcher
 
 import "fmt"
 
+// PCREAvailable reports whether this build includes the PCRE engine.
+const PCREAvailable = false
+
 // PCREMatcher stub for builds without PCRE support.
 //
 // The real PCRE backend (go.elara.ws/pcre) transitively links
@@ -12,7 +15,6 @@ import "fmt"
 // invocation, even ones that never use -P. The default build therefore
 // excludes it; `make build-pcre` produces a binary with full -P support.
 type PCREMatcher struct {
-	maxCols      int
 	needLineNums bool
 }
 
@@ -24,9 +26,9 @@ func NewPCREMatcher(pattern string, ignoreCase bool, invert bool) (*PCREMatcher,
 // The methods below are never reachable (NewPCREMatcher always errors);
 // they exist so *PCREMatcher satisfies the Matcher interface in both builds.
 
-func (m *PCREMatcher) FindAll(data []byte) MatchSet    { panic("pcre not compiled in") }
-func (m *PCREMatcher) MatchExists(data []byte) bool    { panic("pcre not compiled in") }
-func (m *PCREMatcher) CountAll(data []byte) int        { panic("pcre not compiled in") }
+func (m *PCREMatcher) FindAll(data []byte) MatchSet { panic("pcre not compiled in") }
+func (m *PCREMatcher) MatchExists(data []byte) bool { panic("pcre not compiled in") }
+func (m *PCREMatcher) CountAll(data []byte) int     { panic("pcre not compiled in") }
 func (m *PCREMatcher) FindLine(line []byte, lineNum int, byteOffset int64) (MatchSet, bool) {
 	panic("pcre not compiled in")
 }

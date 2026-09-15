@@ -92,27 +92,21 @@ func Run(cfg Config) int {
 		}
 	}
 
+	// Display-column limit (-M) is a text-formatter concern only; matchers
+	// always resolve full line bounds so regions and totals stay exact.
 	maxCols := effectiveMaxCols(cfg)
 	// Multiline, structural, and block output must not be
-	// column-truncated unless the user explicitly asked for a limit
-	// (--block also needs true line starts from the matcher, not
-	// windowed snippets).
+	// column-truncated unless the user explicitly asked for a limit.
 	if (cfg.Multiline || cfg.Structural || cfg.Block) && cfg.MaxColumns == 0 {
 		maxCols = 0
 	}
 
 	opts := matcher.MatcherOpts{
-		MaxCols: maxCols,
 		// JSON consumers (agents) always need real line numbers.
 		NeedLineNums: cfg.LineNumbers || cfg.JSONOutput,
 		Multiline:    cfg.Multiline,
 		Structural:   cfg.Structural,
 		Lang:         lang.ByName(cfg.Lang),
-	}
-	// Histogram counts matched spans — never truncate the lines they
-	// live in.
-	if cfg.Histogram {
-		opts.MaxCols = 0
 	}
 
 	// Create matcher from pipelines (--batch builds its own matchers).

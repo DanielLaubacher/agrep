@@ -2,6 +2,7 @@ package matcher
 
 import (
 	"fmt"
+	"regexp"
 	"regexp/syntax"
 	"strings"
 
@@ -10,7 +11,6 @@ import (
 
 // MatcherOpts holds display-related options that affect match extraction.
 type MatcherOpts struct {
-	MaxCols      int       // max columns for snippet extraction (0 = full lines)
 	NeedLineNums bool      // compute line numbers (false = skip for speed)
 	Multiline    bool      // -U: patterns may match across line boundaries
 	Structural   bool      // -S: pattern is a structural template with :[name] holes
@@ -56,23 +56,31 @@ func NewMatcher(patterns []string, fixed bool, usePCRE bool, ignoreCase bool, in
 	}
 
 	if usePCRE {
-		// Combine multiple patterns with |
-		pattern := patterns[0]
-		if len(patterns) > 1 {
-			var combined strings.Builder
-			for i, p := range patterns {
-				if i > 0 {
-					combined.WriteString("|")
-				}
-				combined.WriteString("(?:" + p + ")")
-			}
-			pattern = combined.String()
-		}
-		m, err := NewPCREMatcher(pattern, ignoreCase, invert)
+		m, err := NewPCREMatcher(combinePatterns(patterns), ignoreCase, invert)
 		if err != nil {
 			return nil, err
 		}
-		m.maxCols = opts.MaxCols
+		m.needLineNums = opts.NeedLineNums
+		return m, nil
+	}
+
+	// -i on a non-ASCII pattern needs full Unicode case folding — the
+	// SIMD literal engines and the lazy-DFA engine fold ASCII only, so
+	// 'müller' would silently miss 'MÜLLER'. Route such patterns to the
+	// stdlib regex engine (quoting them first when -F promised literal
+	// semantics); its prefilters are ASCII-gated, so they stay safe.
+	if ignoreCase && !allASCII(patterns) {
+		if fixed {
+			quoted := make([]string, len(patterns))
+			for i, p := range patterns {
+				quoted[i] = regexp.QuoteMeta(p)
+			}
+			patterns = quoted
+		}
+		m, err := NewRegexMatcher(combinePatterns(patterns), ignoreCase, invert)
+		if err != nil {
+			return nil, err
+		}
 		m.needLineNums = opts.NeedLineNums
 		return m, nil
 	}
@@ -80,7 +88,6 @@ func NewMatcher(patterns []string, fixed bool, usePCRE bool, ignoreCase bool, in
 	if fixed {
 		if len(patterns) == 1 {
 			m := NewBoyerMooreMatcher(patterns[0], ignoreCase, invert)
-			m.maxCols = opts.MaxCols
 			m.needLineNums = opts.NeedLineNums
 			return m, nil
 		}
@@ -99,7 +106,6 @@ func NewMatcher(patterns []string, fixed bool, usePCRE bool, ignoreCase bool, in
 	if allLiteral {
 		if len(patterns) == 1 {
 			m := NewBoyerMooreMatcher(patterns[0], ignoreCase, invert)
-			m.maxCols = opts.MaxCols
 			m.needLineNums = opts.NeedLineNums
 			return m, nil
 		}
@@ -107,17 +113,7 @@ func NewMatcher(patterns []string, fixed bool, usePCRE bool, ignoreCase bool, in
 	}
 
 	// Regex mode: combine multiple patterns with |
-	pattern := patterns[0]
-	if len(patterns) > 1 {
-		var combined strings.Builder
-		for i, p := range patterns {
-			if i > 0 {
-				combined.WriteString("|")
-			}
-			combined.WriteString("(?:" + p + ")")
-		}
-		pattern = combined.String()
-	}
+	pattern := combinePatterns(patterns)
 
 	// Optimization: detect alternation-of-literals in a single regex pattern
 	// (e.g., "ERROR|INFO|function") and route to Aho-Corasick for SIMD search.
@@ -125,28 +121,59 @@ func NewMatcher(patterns []string, fixed bool, usePCRE bool, ignoreCase bool, in
 	if alts := extractAlternationLiterals(pattern); len(alts) > 0 {
 		if len(alts) == 1 {
 			m := NewBoyerMooreMatcher(alts[0], ignoreCase, invert)
-			m.maxCols = opts.MaxCols
 			m.needLineNums = opts.NeedLineNums
 			return m, nil
 		}
 		return newMultiLiteralMatcher(alts, ignoreCase, invert, opts), nil
 	}
 
-	// Use FastRegexMatcher (lazy DFA engine) for better performance
+	return newRegexPathMatcher(pattern, ignoreCase, invert, opts)
+}
+
+// newRegexPathMatcher builds the regex engine chain: the lazy-DFA
+// FastRegexMatcher, falling back to the stdlib RegexMatcher for
+// constructs it can't handle.
+func newRegexPathMatcher(pattern string, ignoreCase bool, invert bool, opts MatcherOpts) (Matcher, error) {
 	fm, err := NewFastRegexMatcher(pattern, ignoreCase, invert)
 	if err != nil {
-		// Fall back to stdlib RegexMatcher if our engine can't handle it
 		m, err2 := NewRegexMatcher(pattern, ignoreCase, invert)
 		if err2 != nil {
 			return nil, err2
 		}
-		m.maxCols = opts.MaxCols
 		m.needLineNums = opts.NeedLineNums
 		return m, nil
 	}
-	fm.maxCols = opts.MaxCols
 	fm.needLineNums = opts.NeedLineNums
 	return fm, nil
+}
+
+// combinePatterns OR-joins patterns into one regex, each in a
+// non-capturing group.
+func combinePatterns(patterns []string) string {
+	if len(patterns) == 1 {
+		return patterns[0]
+	}
+	var combined strings.Builder
+	for i, p := range patterns {
+		if i > 0 {
+			combined.WriteString("|")
+		}
+		combined.WriteString("(?:" + p + ")")
+	}
+	return combined.String()
+}
+
+// allASCII reports whether every pattern is pure ASCII (the SIMD literal
+// engines can only case-fold ASCII).
+func allASCII(patterns []string) bool {
+	for _, p := range patterns {
+		for i := 0; i < len(p); i++ {
+			if p[i] >= 0x80 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // NewMatcherFromPipelines creates a Matcher from pipeline stage configurations.
@@ -218,17 +245,11 @@ func buildPipeline(stages []StageConfig, ignoreCase bool, invert bool, opts Matc
 			stageInvert = invert
 		}
 
-		// Stage 0 in a multi-stage pipeline must not truncate lines (MaxCols=0)
-		// because subsequent stages need the full line content to search.
-		// Only a single-stage pipeline (handled by the fast path above) should truncate.
-		// All non-first stages also use relaxed opts.
+		// Non-first stages act as filters over stage 0's lines; they never
+		// drive output, so they skip line-number bookkeeping.
 		stageOpts := opts
-		if len(stages) > 1 {
-			if i == 0 {
-				stageOpts.MaxCols = 0 // full lines for pipeline filtering
-			} else {
-				stageOpts = MatcherOpts{MaxCols: 0, NeedLineNums: false}
-			}
+		if len(stages) > 1 && i > 0 {
+			stageOpts = MatcherOpts{NeedLineNums: false}
 		}
 
 		m, err := NewMatcher([]string{s.Pattern}, s.Fixed, s.PCRE, ignoreCase, stageInvert, stageOpts)
@@ -243,18 +264,15 @@ func buildPipeline(stages []StageConfig, ignoreCase bool, invert bool, opts Matc
 	return NewPipelineMatcher(matchers, onlyMatch), nil
 }
 
-
 // newMultiLiteralMatcher picks the best engine for a set of fixed patterns:
 // rare-pair Teddy (SIMD, 2-8 patterns) when applicable, Aho-Corasick
 // otherwise.
 func newMultiLiteralMatcher(patterns []string, ignoreCase bool, invert bool, opts MatcherOpts) Matcher {
 	if tm := NewTeddyMatcher(patterns, ignoreCase, invert); tm != nil {
-		tm.maxCols = opts.MaxCols
 		tm.needLineNums = opts.NeedLineNums
 		return tm
 	}
 	m := NewAhoCorasickMatcher(patterns, ignoreCase, invert)
-	m.maxCols = opts.MaxCols
 	m.needLineNums = opts.NeedLineNums
 	return m
 }

@@ -16,7 +16,6 @@ type TeddyMatcher struct {
 	patterns     [][]byte // lowered when ignoreCase
 	ignoreCase   bool
 	invert       bool
-	maxCols      int
 	needLineNums bool
 }
 
@@ -106,7 +105,7 @@ func (m *TeddyMatcher) FindAll(data []byte) MatchSet {
 
 	// Stream matches straight into the MatchSet builder (line extraction
 	// and newline counting happen while the region is cache-hot).
-	b := newMatchSetBuilder(data, m.maxCols, m.needLineNums)
+	b := newMatchSetBuilder(data, m.needLineNums)
 	m.teddy.Scan(data, func(pos, pat int) bool {
 		return b.add(pos, pos+len(m.patterns[pat]))
 	})

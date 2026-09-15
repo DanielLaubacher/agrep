@@ -13,7 +13,6 @@ type BoyerMooreMatcher struct {
 	patternLow   []byte // lowered pattern for case-insensitive
 	ignoreCase   bool
 	invert       bool
-	maxCols      int
 	needLineNums bool
 }
 
@@ -78,7 +77,7 @@ func (m *BoyerMooreMatcher) FindAll(data []byte) MatchSet {
 	} else {
 		offsets = simd.IndexAll(data, m.patternLow)
 	}
-	return matchSetFromOffsets(data, offsets, len(m.patternLow), m.maxCols, m.needLineNums)
+	return matchSetFromOffsets(data, offsets, len(m.patternLow), m.needLineNums)
 }
 
 // findAllInvert returns lines that do NOT contain the pattern.

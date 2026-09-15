@@ -8,13 +8,15 @@ import (
 	"go.elara.ws/pcre"
 )
 
+// PCREAvailable reports whether this build includes the PCRE engine.
+const PCREAvailable = true
+
 // PCREMatcher matches using PCRE2-compatible regexes via the pure Go pcre package.
 // Supports lookahead, lookbehind, backreferences, atomic groups, and all PCRE2 features.
 type PCREMatcher struct {
 	re           *pcre.Regexp
 	ignoreCase   bool
 	invert       bool
-	maxCols      int
 	needLineNums bool
 }
 
@@ -65,7 +67,7 @@ func (m *PCREMatcher) FindAll(data []byte) MatchSet {
 		return MatchSet{}
 	}
 
-	return matchSetFromLocs(data, locs, m.maxCols, m.needLineNums)
+	return matchSetFromLocs(data, locs, m.needLineNums)
 }
 
 func (m *PCREMatcher) findAllInvert(data []byte) MatchSet {

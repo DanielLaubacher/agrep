@@ -14,7 +14,6 @@ import (
 type RegexMatcher struct {
 	re           *regexp.Regexp
 	invert       bool
-	maxCols      int
 	needLineNums bool
 	prefilter    []byte   // primary extracted literal for SIMD prefilter (nil = no prefilter)
 	prefilterCI  bool     // use case-insensitive SIMD scan for primary
@@ -205,7 +204,7 @@ func (m *RegexMatcher) FindAll(data []byte) MatchSet {
 		if len(locs) == 0 {
 			return MatchSet{}
 		}
-		return matchSetFromLocs(data, locs, m.maxCols, m.needLineNums)
+		return matchSetFromLocs(data, locs, m.needLineNums)
 	}
 
 	return m.findAllPrefiltered(data)
@@ -268,7 +267,7 @@ func (m *RegexMatcher) findAllPrefiltered(data []byte) MatchSet {
 		return MatchSet{}
 	}
 
-	return matchSetFromLocs(data, allLocs, m.maxCols, m.needLineNums)
+	return matchSetFromLocs(data, allLocs, m.needLineNums)
 }
 
 func (m *RegexMatcher) findAllInvert(data []byte) MatchSet {

@@ -13,7 +13,6 @@ import (
 type FastRegexMatcher struct {
 	re           *regex.Regexp
 	invert       bool
-	maxCols      int
 	needLineNums bool
 }
 
@@ -73,7 +72,7 @@ func (m *FastRegexMatcher) FindAll(data []byte) MatchSet {
 		return m.findAllInvert(data)
 	}
 
-	b := newMatchSetBuilder(data, m.maxCols, m.needLineNums)
+	b := newMatchSetBuilder(data, m.needLineNums)
 	m.re.FindAllIndexFunc(data, b.add)
 	return b.finish()
 }
