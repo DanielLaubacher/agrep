@@ -57,7 +57,9 @@ Options:
       --structural         PATTERN is a structural template with :[name] holes
                            matching lazily within balanced delimiters
       --lang NAME          Language family for --structural string/comment
-                           handling (go py js c rs sh rb md; default: generic)
+                           handling (go py js c rs sh rb md; auto-detected
+                           from a single file argument, else generic
+                           with a warning)
       --capture NAME       With --structural --histogram: aggregate a hole's
                            captured text instead of full matches
       --block              Emit each match's whole enclosing definition block

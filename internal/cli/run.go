@@ -8,6 +8,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync/atomic"
 	"unicode"
 
@@ -19,6 +20,49 @@ import (
 	"github.com/DanielLaubacher/agrep/internal/walker"
 	"github.com/DanielLaubacher/agrep/internal/watch"
 )
+
+// resolveStructuralLang picks the language family for --structural's
+// string/comment atom awareness. An explicit --lang always wins (this
+// includes "--lang generic", which lang.ByName also maps to Generic —
+// once given, an explicit choice is indistinguishable from Generic
+// itself, so auto-detection/warning below only applies when --lang was
+// never given at all). Without one, a single recognizable file
+// extension among the search paths is used automatically, matching how
+// --block/--scope/--sections already auto-detect per file. Anything
+// less certain (a directory, files of different families, or no
+// recognizable extension) falls back to Generic — but says so: Generic
+// only knows balanced delimiters, and can silently misparse ordinary
+// code where a string or comment literal contains an unbalanced
+// bracket character (self-test finding: --structural without --lang on
+// this project's own source).
+func resolveStructuralLang(cfg Config) lang.Lang {
+	if !cfg.Structural || cfg.Lang != "" {
+		return lang.ByName(cfg.Lang)
+	}
+
+	detected := lang.Generic
+	ambiguous := false
+	for _, p := range cfg.Paths {
+		st, err := os.Stat(p)
+		if err != nil || st.IsDir() {
+			continue
+		}
+		fam := lang.ByPath(p)
+		if fam == lang.Generic {
+			continue
+		}
+		if detected != lang.Generic && detected != fam {
+			ambiguous = true
+		}
+		detected = fam
+	}
+	if detected != lang.Generic && !ambiguous {
+		return detected
+	}
+	logWarn("--structural has no --lang and no single file language could be inferred (%s); using generic mode — balanced delimiters only, strings/comments are not recognized and an unbalanced bracket inside one can silently misparse real code. Pass --lang go|py|js|rust|c|sh|rb|md.",
+		strings.Join(cfg.Paths, " "))
+	return lang.Generic
+}
 
 // logWarn writes a warning to stderr.
 func logWarn(format string, args ...any) {
@@ -111,7 +155,7 @@ func Run(cfg Config) int {
 		NeedLineNums: cfg.LineNumbers || cfg.JSONOutput,
 		Multiline:    cfg.Multiline,
 		Structural:   cfg.Structural,
-		Lang:         lang.ByName(cfg.Lang),
+		Lang:         resolveStructuralLang(cfg),
 	}
 
 	// Create matcher from pipelines (--batch builds its own matchers).

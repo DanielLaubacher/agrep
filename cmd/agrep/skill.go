@@ -89,8 +89,12 @@ normal outcome, not a failure — pair it with --suggest.
      agrep -rn --ident 'connectTimeout' src/
 - Structural templates: --structural makes the pattern a template
   with :[name] holes that match lazily within balanced delimiters,
-  across lines, skipping strings/comments (--lang go|py|js|c|rs|sh|rb|md;
-  default generic = delimiters only). Whitespace matches any run.
+  across lines, skipping strings/comments (--lang go|py|js|c|rs|sh|rb|md).
+  Without --lang, a single recognizable file argument auto-detects its
+  family; anything less certain (a directory, mixed files) warns and
+  falls back to generic (delimiters only — a string/comment containing
+  an unbalanced bracket can then misparse real code, so pass --lang
+  for a directory of real source). Whitespace matches any run.
      agrep -rn --structural 'NewClient(:[args])' --lang go src/
   JSON matches carry "captures":{"args":"..."} — the hole bindings.
   Template text inside strings/comments never matches, and a template
