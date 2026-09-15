@@ -103,10 +103,16 @@ func (f *TextFormatter) formatGroupLine(buf []byte, filePath string, ms *matcher
 	} else {
 		h = sectionHeading(ms.Data, m.LineStart)
 	}
-	if h == nil {
-		return buf
-	}
 	sec := string(h)
+	if h == nil {
+		// No heading or definition applies (common in PDF-extracted
+		// text): a page marker still anchors the match.
+		if page := nearestPage(ms.Data, m.LineStart); page > 0 {
+			sec = "p." + strconv.Itoa(page)
+		} else {
+			return buf
+		}
+	}
 	if sec == f.lastSection && filePath == f.lastFile {
 		return buf
 	}
@@ -286,6 +292,31 @@ func (f *TextFormatter) formatOnlyMatch(buf []byte, filePath string, ms *matcher
 		buf = append(buf, '\n')
 	}
 	return buf
+}
+
+// clipPositions shifts match positions into window [winStart, winEnd)
+// and drops or clamps those outside it.
+func clipPositions(positions [][2]int, winStart, winEnd int) [][2]int {
+	var clipped [][2]int
+	width := winEnd - winStart
+	for _, pos := range positions {
+		s := pos[0] - winStart
+		e := pos[1] - winStart
+		if e <= 0 {
+			continue
+		}
+		if s >= width {
+			break
+		}
+		if s < 0 {
+			s = 0
+		}
+		if e > width {
+			e = width
+		}
+		clipped = append(clipped, [2]int{s, e})
+	}
+	return clipped
 }
 
 // truncateWindow computes a [start, end) byte window of about maxCols

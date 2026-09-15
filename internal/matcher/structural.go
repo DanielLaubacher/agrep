@@ -96,6 +96,7 @@ type StructuralMatcher struct {
 	segs         []segment
 	spec         *lang.Spec
 	anchor       []byte // first non-ws run of the first literal: the SIMD prefilter
+	wordBounded  bool   // anchor starts with an identifier byte: require a left word boundary
 	needLineNums bool
 }
 
@@ -116,11 +117,16 @@ func NewStructuralMatcher(pattern string, family lang.Lang, opts MatcherOpts) (*
 		segs:         segs,
 		spec:         family.Spec(),
 		anchor:       anchor,
+		wordBounded:  len(anchor) > 0 && identByte(anchor[0]),
 		needLineNums: opts.NeedLineNums,
 	}, nil
 }
 
 func isWS(c byte) bool { return c == ' ' || c == '\t' || c == '\r' || c == '\n' }
+
+func identByte(c byte) bool {
+	return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
 
 // matchLit matches a pattern literal at data[pos:]. A whitespace run in
 // the literal matches one-or-more whitespace bytes in the data.
@@ -260,6 +266,11 @@ func (m *StructuralMatcher) findAll(data []byte, emit func(start, end int, caps 
 	lastEnd := 0
 	for _, off := range offsets {
 		if off < lastEnd {
+			continue
+		}
+		// A template starting with an identifier is word-bounded on the
+		// left: 'Client(:[a])' must not match inside 'NewClient('.
+		if m.wordBounded && off > 0 && identByte(data[off-1]) {
 			continue
 		}
 		if atoms != nil && atoms.inAtom(off) {

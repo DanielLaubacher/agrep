@@ -33,18 +33,23 @@ type Config struct {
 	Fixed    bool
 	PCRE     bool
 
-	IgnoreCase     bool
-	Recursive      bool
-	LineNumbers    bool
-	CountOnly      bool
-	Invert         bool
-	FileNamesOnly  bool
-	OnlyMatch      bool // global -o flag (when no pipelines)
-	ContextBefore  int
-	ContextAfter   int
-	WatchMode      bool
-	JSONOutput     bool
-	Compact        bool // --compact: lean JSON match records (no span/byte_offset/matches)
+	IgnoreCase    bool
+	Recursive     bool
+	LineNumbers   bool
+	CountOnly     bool
+	Invert        bool
+	FileNamesOnly bool
+	OnlyMatch     bool // global -o flag (when no pipelines)
+	ContextBefore int
+	ContextAfter  int
+	WatchMode     bool
+	JSONOutput    bool
+	Compact       bool // --compact: lean JSON match records (no span/byte_offset/matches)
+	// CaseFromConfig marks that the effective -S/-i came from the config
+	// file with no command-line case flag — worth a stderr note when it
+	// changes counts versus grep.
+	CaseFromConfig bool
+	ConfigPath     string // config file that supplied injected flags ("" if none)
 	Color          ColorMode
 	Workers        int
 	NoIgnore       bool

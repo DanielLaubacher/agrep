@@ -63,6 +63,12 @@ func TestSkillTextCoversJSONContract(t *testing.T) {
 		"@section:",
 		"--rank defs",
 		"--compact",
+		// 2026-09-15 follow-up fixes (issues.txt):
+		`"kind":"definition"`,
+		"#N",
+		"word-bounded",
+		"strong literal",
+		`{type:"region"}`,
 	}
 	for _, tok := range required {
 		if !strings.Contains(skillText, tok) {
@@ -71,7 +77,7 @@ func TestSkillTextCoversJSONContract(t *testing.T) {
 	}
 
 	// The contract section must name every discriminator type.
-	for _, typ := range []string{"match", "context", "count", "file", "outline", "variant", "suggest", "suggest_summary", "collapsed", "error", "summary"} {
+	for _, typ := range []string{"match", "region", "context", "count", "file", "outline", "variant", "suggest", "suggest_summary", "collapsed", "error", "summary"} {
 		if !strings.Contains(skillText, "\n  "+typ) {
 			t.Errorf("skillText JSON contract missing type %q", typ)
 		}

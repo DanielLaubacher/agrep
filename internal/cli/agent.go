@@ -28,10 +28,14 @@ import (
 // N whole lines on each side. Region ids are self-contained, so an
 // agent can cite a span and later re-fetch or read around it without
 // re-running the search.
-func runGetRegion(region string, expand int, w *output.Writer) int {
+func runGetRegion(region string, expand int, jsonOut bool, w *output.Writer) int {
 	at := strings.LastIndexByte(region, '@')
 	if at <= 0 {
-		logWarn("invalid region %q (want path@start-end or path@:line-line)", region)
+		if strings.HasPrefix(region, "-") {
+			logWarn("region %q looks like a flag — pass flags before --get-region", region)
+		} else {
+			logWarn("invalid region %q (want path@start-end, path@:line-line, path@func:Name, or path@section:Name)", region)
+		}
 		return 2
 	}
 	path := region[:at]
@@ -41,7 +45,7 @@ func runGetRegion(region string, expand int, w *output.Writer) int {
 	// definition block, "path@section:Name" the whole Markdown section
 	// — the unit the agent would otherwise read by guessed line range.
 	if kind, name, found := strings.Cut(rangeStr, ":"); found && (kind == "func" || kind == "section") && name != "" {
-		return runGetNamedRegion(path, kind, name, expand, w)
+		return runGetNamedRegion(path, kind, name, expand, jsonOut, w)
 	}
 
 	lineMode := strings.HasPrefix(rangeStr, ":")
@@ -85,7 +89,7 @@ func runGetRegion(region string, expand int, w *output.Writer) int {
 	}
 
 	// Fast path: exact byte span, no expansion — pread just the range.
-	if !lineMode && expand == 0 {
+	if !lineMode && expand == 0 && !jsonOut {
 		buf := make([]byte, end-start)
 		total := 0
 		for total < len(buf) {
@@ -123,14 +127,52 @@ func runGetRegion(region string, expand int, w *output.Writer) int {
 	if expand > 0 {
 		s, e = expandByLines(data, s, e, expand)
 	}
+	if jsonOut {
+		w.Write(regionJSON(path, data, s, e))
+		return 0
+	}
 	w.Write(data[s:e])
 	return 0
+}
+
+// regionJSON renders one {type:"region"} object: the citation and its
+// verification in a single parseable record.
+func regionJSON(path string, data []byte, s, e int) []byte {
+	buf := append([]byte(nil), `{"type":"region","file":`...)
+	buf = appendJSONString(buf, path)
+	buf = append(buf, `,"line_number":`...)
+	buf = strconv.AppendInt(buf, int64(1+bytes.Count(data[:s], []byte{'\n'})), 10)
+	buf = append(buf, `,"span":[`...)
+	buf = strconv.AppendInt(buf, int64(s), 10)
+	buf = append(buf, ',')
+	buf = strconv.AppendInt(buf, int64(e), 10)
+	buf = append(buf, `],"region":`...)
+	buf = appendJSONString(buf, path+"@"+strconv.Itoa(s)+"-"+strconv.Itoa(e))
+	if h := output.SectionHeadingFor(data, s); h != nil {
+		buf = append(buf, `,"section":`...)
+		buf = appendJSONString(buf, string(h))
+	}
+	if page := output.PageFor(data, s); page > 0 {
+		buf = append(buf, `,"page":`...)
+		buf = strconv.AppendInt(buf, int64(page), 10)
+	}
+	buf = append(buf, `,"text":`...)
+	buf = appendJSONString(buf, string(data[s:e]))
+	buf = append(buf, "}\n"...)
+	return buf
 }
 
 // runGetNamedRegion resolves "path@func:Name" / "path@section:Name"
 // and prints the whole named block. Ambiguity is never silent: the
 // first candidate is printed and the rest are listed on stderr.
-func runGetNamedRegion(path, kind, name string, expand int, w *output.Writer) int {
+func runGetNamedRegion(path, kind, name string, expand int, jsonOut bool, w *output.Writer) int {
+	// "Name#3" selects the 3rd candidate (1-based) — the disambiguation
+	// syntax the ambiguity report points at.
+	ordinal := 0
+	if i := strings.LastIndexByte(name, '#'); i > 0 && i < len(name)-1 && isAllDigits(name[i+1:]) {
+		ordinal, _ = strconv.Atoi(name[i+1:])
+		name = name[:i]
+	}
 	fd, err := unix.Open(path, unix.O_RDONLY, 0)
 	if err != nil {
 		logWarn("%s: %v", path, err)
@@ -143,27 +185,49 @@ func runGetNamedRegion(path, kind, name string, expand int, w *output.Writer) in
 		return 2
 	}
 
-	s, e, candidates, ok := output.FindNamedBlock(data, path, kind, name)
+	s, e, candidates, ok := output.FindNamedBlock(data, path, kind, name, ordinal)
 	if !ok {
-		logWarn("no %s matching %q in %s", kind, name, path)
+		if ordinal > 0 && len(candidates) > 0 {
+			logWarn("%s:%s has %d candidates; #%d does not exist", kind, name, len(candidates), ordinal)
+		} else {
+			logWarn("no %s matching %q in %s", kind, name, path)
+		}
 		return 2
 	}
-	if len(candidates) > 1 {
+	if len(candidates) > 1 && ordinal == 0 {
+		shown := candidates[0]
 		var lines []string
 		for _, ln := range candidates[1:] {
 			lines = append(lines, strconv.Itoa(ln))
 		}
-		logWarn("%d candidates for %s:%s; showing line %d (others at lines %s — cite %s@:N-M to disambiguate)",
-			len(candidates), kind, name, candidates[0], strings.Join(lines, ", "), path)
+		logWarn("%d candidates for %s:%s; showing line %d (others at lines %s — pick one with %s@%s:%s#N)",
+			len(candidates), kind, name, shown, strings.Join(lines, ", "), path, kind, name)
 	}
 	if expand > 0 {
 		s, e = expandByLines(data, s, e, expand)
+	}
+	if jsonOut {
+		w.Write(regionJSON(path, data, s, e))
+		return 0
 	}
 	w.Write(data[s:e])
 	if e > s && data[e-1] != '\n' {
 		w.Write([]byte{'\n'})
 	}
 	return 0
+}
+
+// isAllDigits reports whether s is non-empty and all ASCII digits.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // countLines returns the number of lines in data (a trailing byte
@@ -570,6 +634,12 @@ func appendJSONString(buf []byte, s string) []byte {
 		switch {
 		case c == '"' || c == '\\':
 			buf = append(buf, '\\', c)
+		case c == '\n':
+			buf = append(buf, '\\', 'n')
+		case c == '\t':
+			buf = append(buf, '\\', 't')
+		case c == '\r':
+			buf = append(buf, '\\', 'r')
 		case c < 0x20:
 			buf = append(buf, `\u00`...)
 			const hex = "0123456789abcdef"

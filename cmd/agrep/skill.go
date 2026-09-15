@@ -67,7 +67,11 @@ normal outcome, not a failure — pair it with --suggest.
    func: finds the definition (word-bounded, per language family) and
    prints its whole block; section: the Markdown section (name matched
    case-insensitively). Ambiguity is reported on stderr with the other
-   candidates' line numbers.
+   candidates' line numbers — append #N to pick the Nth candidate
+   ('@section:Discussion#3'), or qualify with a parent heading
+   ('@section:Recipe 8/Discussion'). Add --json to get one
+   {type:"region"} record (file, line_number, span, region, section,
+   page, text) — verify and cite in a single parseable step.
    "span" and "region" always cover the FULL line regardless of any
    display truncation, so region bytes match the "text" field exactly.
    A region past EOF (a stale or fabricated citation) fails with exit
@@ -85,8 +89,12 @@ normal outcome, not a failure — pair it with --suggest.
   default generic = delimiters only). Whitespace matches any run.
      agrep -rn --structural 'NewClient(:[args])' --lang go src/
   JSON matches carry "captures":{"args":"..."} — the hole bindings.
-  Template text inside strings/comments never matches. One probe
-  answers "call sites and what gets passed", multi-line calls included.
+  Template text inside strings/comments never matches, and a template
+  starting with an identifier is word-bounded ('Client(' does not
+  match 'NewClient('). The definition itself matches too but carries
+  "kind":"definition" — filter on it to count only call sites. One
+  probe answers "call sites and what gets passed", multi-line calls
+  included.
 - Enumerate values: --histogram counts distinct matched texts
   (built-in sort|uniq -c), composing with -o pipelines:
      agrep -r --histogram -oe 'ERR_[A-Z_]+' src/
@@ -98,6 +106,8 @@ normal outcome, not a failure — pair it with --suggest.
   block dedupe to a single emission; span/region cover exactly the
   emitted bytes; oversize blocks are cut at 32KB with "truncated":true.
      agrep -rn --block 'retryPolicy' src/
+  JSON block records carry "scope" (the definition line / heading)
+  so a block is self-describing without a second call.
 - Cross-line shapes: -U lets the pattern match across lines; output
   and span cover the whole block; ^ $ anchor per line. Regex only.
 
@@ -108,9 +118,12 @@ normal outcome, not a failure — pair it with --suggest.
   -s forces case-sensitive and overrides earlier -i/-S — including
   ones injected by a ~/.agrep or ~/.gogrep config file. If counts
   differ from grep, check for -S in the config file.
-- -M N truncates DISPLAYED lines to N bytes (0 = 75-byte default,
-  -1 = never). Display-only: JSON "text", "span", "region", and all
-  totals are line-accurate at any -M.
+- -M N truncates displayed lines to N bytes (0 = 75-byte default,
+  -1 = never), snapping to word boundaries. In JSON, an explicit
+  -M N windows only "text" (with "truncated":true) — "span",
+  "region", and all totals stay line-accurate, so survey with
+  '-M 150 --compact' and cite from the region. Without -M, JSON
+  text is always the full line.
 
 ## Scoping the corpus
 
@@ -142,8 +155,10 @@ tree you are editing. --clear-index PATH deletes index state.
 
 JSON-Lines, one object per line; "type" discriminates:
   match    {type,file,line_number,byte_offset,text,matches,
-            span,region,section?,scope?,page?,captures?,truncated?,
-            query?}
+            span,region,section?,scope?,page?,kind?,captures?,
+            truncated?,query?}  kind:"definition" on def-shaped lines
+  region   {type,file,line_number,span,region,section?,page?,text}
+           from --get-region --json
   context  {type,file,line_number,byte_offset,text,span,region}
            context lines around a match (-C/-A/-B)
   count    {type,file,count,query?}            with -c
@@ -206,6 +221,10 @@ next pattern; -o emits only the matched text. Example over a log line
   caveat on any "absent" claim.
 - A --suggest run always reports what it tried; zero variants
   occurring is itself a finding — stop probing that vocabulary.
+- Patterns without a strong literal ('\bgo\s+func', bare -U shapes)
+  cost seconds of CPU per query on a large tree — ~70x the literal
+  path. Prefer a literal prefilter stage (-Fe 'func main' -te '...'),
+  --structural, or --use-index only when the tree is huge and static.
 - Cite only via region ids you have verified with --get-region.
 - -P (PCRE) is excluded from the default build; the stock engine is
   RE2-class (no lookbehind). Use bin/agrep-pcre when you need it.

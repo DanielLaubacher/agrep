@@ -52,7 +52,7 @@ func effectiveMaxCols(cfg Config) int {
 func Run(cfg Config) int {
 	// --get-region: fetch bytes for a span id; no search at all.
 	if cfg.GetRegion != "" {
-		return runGetRegion(cfg.GetRegion, cfg.ExpandLines, output.NewWriter())
+		return runGetRegion(cfg.GetRegion, cfg.ExpandLines, cfg.JSONOutput, output.NewWriter())
 	}
 
 	// --clear-index: index management; no search at all.
@@ -90,6 +90,11 @@ func Run(cfg Config) int {
 		if allLower {
 			cfg.IgnoreCase = true
 		}
+	}
+	// A config file silently changing case sensitivity is why counts
+	// differ from grep — say so once, so the agent doesn't detour.
+	if cfg.IgnoreCase && cfg.CaseFromConfig {
+		logWarn("case-insensitive via %s (pass -s to override)", cfg.ConfigPath)
 	}
 
 	// Display-column limit (-M) is a text-formatter concern only; matchers
@@ -181,6 +186,11 @@ func Run(cfg Config) int {
 	if cfg.JSONOutput {
 		jf := output.NewJSONFormatter()
 		jf.Compact = cfg.Compact
+		// Only an explicit positive -M windows JSON text (a triage
+		// size opt-in); the default is always the full line.
+		if cfg.MaxColumns > 0 {
+			jf.MaxColumns = cfg.MaxColumns
+		}
 		jf.Sections = cfg.Sections
 		jf.Scope = cfg.Scope
 		jf.CountOnly = cfg.CountOnly
@@ -198,6 +208,12 @@ func Run(cfg Config) int {
 		if cfg.CountOnly || cfg.FileNamesOnly || cfg.ContextBefore > 0 || cfg.ContextAfter > 0 {
 			logWarn("--block ignored with -c, -l, or context lines")
 		} else {
+			// A block record should be self-describing: annotate it
+			// with its own definition line / heading (the block starts
+			// there, so the scope resolver names it directly).
+			if jf, ok := formatter.(*output.JSONFormatter); ok {
+				jf.Scope = true
+			}
 			formatter = output.NewBlockFormatter(formatter)
 		}
 	}

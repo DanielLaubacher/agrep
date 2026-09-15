@@ -107,12 +107,12 @@ func TestStructuralGenericFamilyIgnoresQuotes(t *testing.T) {
 
 func TestStructuralParseErrors(t *testing.T) {
 	bad := []string{
-		"",                      // empty
-		":[a] = x",              // must start with literal
-		"f(:[a]:[b])",           // adjacent holes
-		"f(:[a], :[a])",         // duplicate names
-		"f(:[a)",                // unclosed hole
-		"f(:[not a name])",      // invalid name
+		"",                 // empty
+		":[a] = x",         // must start with literal
+		"f(:[a]:[b])",      // adjacent holes
+		"f(:[a], :[a])",    // duplicate names
+		"f(:[a)",           // unclosed hole
+		"f(:[not a name])", // invalid name
 	}
 	for _, p := range bad {
 		if _, err := parseStructural(p); err == nil {
@@ -134,5 +134,25 @@ func TestStructuralTrailingHole(t *testing.T) {
 	got := capText(&ms, 0, "rest")
 	if !strings.HasPrefix(got, "disk full") {
 		t.Errorf("trailing capture = %q", got)
+	}
+}
+
+// A template starting with a bare identifier is word-bounded on the
+// left: 'Client(' must not match inside 'NewClient(' (issues.txt #1).
+func TestStructuralLeftWordBoundary(t *testing.T) {
+	src := []byte("x := NewClient(a)\ny := Client(b)\nz := TestNewClient(c)\n")
+	m, err := NewStructuralMatcher("Client(:[args])", lang.Go, MatcherOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.CountAll(src); got != 1 {
+		t.Errorf("Client( matched %d times, want 1 (only the bare call)", got)
+	}
+	m2, err := NewStructuralMatcher("NewClient(:[args])", lang.Go, MatcherOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m2.CountAll(src); got != 1 {
+		t.Errorf("NewClient( matched %d times, want 1 (TestNewClient excluded)", got)
 	}
 }

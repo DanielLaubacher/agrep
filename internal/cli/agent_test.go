@@ -31,8 +31,8 @@ func TestSuggestVariants(t *testing.T) {
 }
 
 func TestAppendJSONString(t *testing.T) {
-	got := string(appendJSONString(nil, "a\"b\\c\nd"))
-	want := `"a\"b\\c\u000ad"`
+	got := string(appendJSONString(nil, "a\"b\\c\nd\x01e"))
+	want := `"a\"b\\c\nd\u0001e"`
 	if got != want {
 		t.Errorf("appendJSONString = %s, want %s", got, want)
 	}

@@ -1,6 +1,7 @@
 package output
 
 import (
+	"bytes"
 	"encoding/json"
 	"strconv"
 )
@@ -22,6 +23,10 @@ type JSONFormatter struct {
 	// the region id still carries the exact byte range, so citations
 	// lose nothing while drill-in reads cost ~1/3 less.
 	Compact bool
+	// MaxColumns > 0 (an explicit -M) windows the "text" field around
+	// the first match with "truncated":true — a triage size opt-in.
+	// span/region always cover the full line, so citations stay exact.
+	MaxColumns int
 
 	files int
 	lines int
@@ -61,6 +66,10 @@ type jsonMatch struct {
 	// Page is the nearest <!-- p.N --> marker at or before the match
 	// (PDF-extracted documents); emitted with --sections/--scope.
 	Page int `json:"page,omitempty"`
+	// Kind is "definition" when the matched line is definition-shaped
+	// (func/def/class/type per language family) — lets an agent split
+	// definitions from references and call sites without a second pass.
+	Kind string `json:"kind,omitempty"`
 	// Captures holds structural hole bindings (-S): hole name → matched
 	// text. Anonymous :[_] holes are omitted.
 	Captures map[string]string `json:"captures,omitempty"`
@@ -81,6 +90,7 @@ type jsonMatchCompact struct {
 	Section   string            `json:"section,omitempty"`
 	Scope     string            `json:"scope,omitempty"`
 	Page      int               `json:"page,omitempty"`
+	Kind      string            `json:"kind,omitempty"`
 	Captures  map[string]string `json:"captures,omitempty"`
 	Truncated bool              `json:"truncated,omitempty"`
 	Query     string            `json:"query,omitempty"`
@@ -199,17 +209,30 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 			continue
 		}
 
+		lineBytes := ms.Data[m.LineStart : m.LineStart+m.LineLen]
+		positions := ms.MatchPositions(i)
+
 		jm := jsonMatch{
 			Type:       "match",
 			File:       result.FilePath,
 			LineNum:    m.LineNum,
 			ByteOffset: m.ByteOffset,
-			Text:       string(ms.Data[m.LineStart : m.LineStart+m.LineLen]),
+			Text:       string(lineBytes),
 			Truncated:  m.Truncated,
 			Query:      result.Query,
 		}
+		// Explicit -M: window the displayed text only; span/region below
+		// still cover the full line.
+		if f.MaxColumns > 0 && len(lineBytes) > f.MaxColumns {
+			winStart, winEnd := truncateWindow(lineBytes, positions, f.MaxColumns)
+			jm.Text = string(lineBytes[winStart:winEnd])
+			jm.Truncated = true
+			positions = clipPositions(positions, winStart, winEnd)
+		}
 		if m.IsContext {
 			jm.Type = "context"
+		} else if IsDefinitionLine(firstLine(ms.Data, m.LineStart, m.LineLen), result.FilePath) {
+			jm.Kind = "definition"
 		}
 
 		span := [2]int64{m.ByteOffset, m.ByteOffset + int64(m.LineLen)}
@@ -240,7 +263,6 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 			}
 			emitted++
 
-			positions := ms.MatchPositions(i)
 			if len(positions) > 0 {
 				jm.Matches = make([]jsonPos, len(positions))
 				for j, pos := range positions {
@@ -253,8 +275,9 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 			data, _ = json.Marshal(jsonMatchCompact{
 				Type: jm.Type, File: jm.File, LineNum: jm.LineNum,
 				Text: jm.Text, Region: jm.Region, Section: jm.Section,
-				Scope: jm.Scope, Page: jm.Page, Captures: jm.Captures,
-				Truncated: jm.Truncated, Query: jm.Query,
+				Scope: jm.Scope, Page: jm.Page, Kind: jm.Kind,
+				Captures: jm.Captures, Truncated: jm.Truncated,
+				Query: jm.Query,
 			})
 		} else {
 			data, _ = json.Marshal(jm)
@@ -307,6 +330,17 @@ func (f *JSONFormatter) Finish(buf []byte) []byte {
 	return buf
 }
 
+// firstLine returns the first line of the snippet at [start, start+n)
+// — for multi-line blocks (-U, --structural, --block) the definition
+// classification looks at the block's opening line.
+func firstLine(data []byte, start, n int) []byte {
+	line := data[start : start+n]
+	if i := bytes.IndexByte(line, '\n'); i >= 0 {
+		return line[:i]
+	}
+	return line
+}
+
 // appendJSONString appends s as a JSON string literal.
 func appendJSONString(buf []byte, s string) []byte {
 	buf = append(buf, '"')
@@ -315,6 +349,12 @@ func appendJSONString(buf []byte, s string) []byte {
 		switch {
 		case c == '"' || c == '\\':
 			buf = append(buf, '\\', c)
+		case c == '\n':
+			buf = append(buf, '\\', 'n')
+		case c == '\t':
+			buf = append(buf, '\\', 't')
+		case c == '\r':
+			buf = append(buf, '\\', 'r')
 		case c < 0x20:
 			buf = append(buf, `\u00`...)
 			const hex = "0123456789abcdef"

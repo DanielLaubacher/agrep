@@ -82,6 +82,17 @@ func nearestPage(data []byte, lineStart int) int {
 	return page
 }
 
+// SectionHeadingFor exposes the Markdown heading lookup for callers
+// outside the formatter chain (--get-region --json).
+func SectionHeadingFor(data []byte, off int) []byte {
+	return sectionHeading(data, off)
+}
+
+// PageFor exposes the <!-- p.N --> page lookup likewise.
+func PageFor(data []byte, off int) int {
+	return nearestPage(data, off)
+}
+
 // budgetBytesPerToken is the byte→token heuristic (~4 bytes per token for
 // English text and code).
 const budgetBytesPerToken = 4

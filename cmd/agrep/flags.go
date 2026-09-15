@@ -36,7 +36,8 @@ Options:
   -i, --ignore-case        Case-insensitive matching
   -S, --smart-case         Case-insensitive if pattern is all lowercase
   -s, --case-sensitive     Force case-sensitive matching (overrides earlier
-                           -i/-S, including from the ~/.agrep config file)
+                           -i/-S, including flags injected by the config file:
+                           AGREP_CONFIG_PATH, ~/.agrep, or ~/.gogrep)
   -v, --invert-match       Select non-matching lines
   -n, --line-number        Print line numbers
   -c, --count              Print only match count per file
@@ -54,9 +55,9 @@ Options:
                            whole matched block (regex only; ^ $ match per line)
       --structural         PATTERN is a structural template with :[name] holes
                            matching lazily within balanced delimiters
-      --lang NAME          Language family for -S string/comment handling
-                           (go py js c rs sh rb md; default: generic)
-      --capture NAME       With -S --histogram: aggregate the named hole's
+      --lang NAME          Language family for --structural string/comment
+                           handling (go py js c rs sh rb md; default: generic)
+      --capture NAME       With --structural --histogram: aggregate a hole's
                            captured text instead of full matches
       --block              Emit each match's whole enclosing definition block
                            (function/class body; Markdown section)
@@ -98,7 +99,10 @@ Agent options (see agent-mode.md):
       --get-region SPAN    Print exact bytes for a "path@start-end" span id,
                            whole lines for "path@:120-160" (1-based), a whole
                            definition for "path@func:Name", or a whole
-                           Markdown section for "path@section:Name"
+                           Markdown section for "path@section:Name" (append
+                           #N to pick the Nth of several candidates; a
+                           "Parent/Child" name matches nested headings).
+                           With --json, emits one {type:"region"} record
       --expand N           Widen --get-region by N whole lines each side
       --use-index          Build/use a trigram index for recursive search;
                            auto-refreshed by a stat sweep on every query
@@ -143,10 +147,14 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 	// Track whether -e was used explicitly
 	explicitE := false
 
-	// Merge config file args with CLI args
+	// Merge config file args with CLI args, remembering how many came
+	// from the config file so injected case flags can be attributed.
 	cliArgs := args
-	if configArgs := cli.LoadConfigArgs(); len(configArgs) > 0 {
+	configArgCount := 0
+	if configArgs, configPath := cli.LoadConfigArgs(); len(configArgs) > 0 {
 		cliArgs = append(configArgs, cliArgs...)
+		configArgCount = len(configArgs)
+		cfg.ConfigPath = configPath
 	}
 
 	// Manual flag parsing to support both -x and --xxx forms, plus positional args
@@ -234,13 +242,16 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			stageOnly = true
 		case "-i", "--ignore-case":
 			cfg.IgnoreCase = true
+			cfg.CaseFromConfig = i < configArgCount
 		case "-S", "--smart-case":
 			cfg.SmartCase = true
+			cfg.CaseFromConfig = i < configArgCount
 		case "-s", "--case-sensitive":
 			// Later flags win, so a command-line -s overrides -i/-S
 			// injected by the config file (parsed first).
 			cfg.IgnoreCase = false
 			cfg.SmartCase = false
+			cfg.CaseFromConfig = i < configArgCount
 		case "-v", "--invert-match":
 			cfg.Invert = true
 		case "-n", "--line-number":

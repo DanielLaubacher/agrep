@@ -11,6 +11,7 @@ package output
 
 import (
 	"bytes"
+	"strings"
 
 	"github.com/DanielLaubacher/agrep/internal/lang"
 	"github.com/DanielLaubacher/agrep/internal/matcher"
@@ -274,12 +275,34 @@ func rebase(out *matcher.MatchSet, ms *matcher.MatchSet, i int, newStart, newLen
 // --get-region: kind "func" finds a definition line (per the file's
 // language family) containing name as a whole word and returns its
 // whole block; kind "section" finds a Markdown heading containing name
-// (case-insensitive) and returns the whole section. Returns the block
-// bounds, the 1-based line numbers of every candidate (the block is the
-// first), and whether anything matched.
-func FindNamedBlock(data []byte, path, kind, name string) (start, end int, candidates []int, ok bool) {
+// (case-insensitive) and returns the whole section. A "Parent/Child"
+// section name additionally requires each ancestor heading (in order)
+// to match the parent segments — only tried when the full name matches
+// nothing, so headings that themselves contain '/' still resolve.
+// ordinal selects the Nth candidate (1-based; 0 means first). Returns
+// the block bounds, the 1-based line numbers of every candidate (the
+// block is the ordinal-th), and whether anything matched.
+func FindNamedBlock(data []byte, path, kind, name string, ordinal int) (start, end int, candidates []int, ok bool) {
+	start, end, candidates, ok = findNamedBlock(data, path, kind, name, nil, ordinal)
+	if !ok && kind == "section" && strings.Contains(name, "/") {
+		parts := strings.Split(name, "/")
+		parents := parts[:len(parts)-1]
+		start, end, candidates, ok = findNamedBlock(data, path, kind, parts[len(parts)-1], parents, ordinal)
+	}
+	return start, end, candidates, ok
+}
+
+func findNamedBlock(data []byte, path, kind, name string, parents []string, ordinal int) (start, end int, candidates []int, ok bool) {
 	fam := lang.ByPath(path)
 	nameBytes := []byte(name)
+	if ordinal < 1 {
+		ordinal = 1
+	}
+	// Heading ancestry stack for Parent/Child section names: one entry
+	// per heading level currently open, lowercased text.
+	var stack []string
+	var stackLevels []int
+
 	lineNum := 0
 	pos := 0
 	for pos < len(data) {
@@ -290,15 +313,29 @@ func FindNamedBlock(data []byte, path, kind, name string) (start, end int, candi
 		var hit bool
 		switch kind {
 		case "section":
-			hit = len(line) > 0 && line[0] == '#' &&
-				bytes.Contains(bytes.ToLower(line), bytes.ToLower(nameBytes))
+			if len(line) > 0 && line[0] == '#' {
+				level := 0
+				for level < len(line) && line[level] == '#' {
+					level++
+				}
+				for len(stackLevels) > 0 && stackLevels[len(stackLevels)-1] >= level {
+					stack = stack[:len(stack)-1]
+					stackLevels = stackLevels[:len(stackLevels)-1]
+				}
+				lower := strings.ToLower(string(line))
+				hit = strings.Contains(lower, strings.ToLower(name)) &&
+					ancestorsMatch(stack, parents)
+				stack = append(stack, lower)
+				stackLevels = append(stackLevels, level)
+			}
 		default: // func
 			_, trimmed := indentAndTrim(line)
 			hit = len(trimmed) > 0 && !isCommentLine(trimmed) &&
 				isDefLine(trimmed, fam) && containsWord(trimmed, nameBytes)
 		}
 		if hit {
-			if len(candidates) == 0 {
+			candidates = append(candidates, lineNum)
+			if len(candidates) == ordinal {
 				bs, be, _, bok := blockBounds(data, pos, path)
 				if bok {
 					start, end = bs, be
@@ -306,11 +343,25 @@ func FindNamedBlock(data []byte, path, kind, name string) (start, end int, candi
 					start, end = pos, le // no block notion: the line itself
 				}
 			}
-			candidates = append(candidates, lineNum)
 		}
 		pos = le + 1
 	}
-	return start, end, candidates, len(candidates) > 0
+	return start, end, candidates, len(candidates) >= ordinal
+}
+
+// ancestorsMatch reports whether the parent segments appear, in order,
+// among the open ancestor headings (case-insensitive substring each).
+func ancestorsMatch(stack []string, parents []string) bool {
+	if len(parents) == 0 {
+		return true
+	}
+	i := 0
+	for _, h := range stack {
+		if i < len(parents) && strings.Contains(h, strings.ToLower(parents[i])) {
+			i++
+		}
+	}
+	return i == len(parents)
 }
 
 // containsWord reports whether name occurs in line bounded by

@@ -100,7 +100,7 @@ func TestBlockFormatterRewrite(t *testing.T) {
 // file@section:Name resolve whole blocks.
 func TestFindNamedBlock(t *testing.T) {
 	goSrc := []byte("package x\n\nfunc alpha() {\n\treturn\n}\n\nfunc beta(n int) int {\n\treturn n\n}\n")
-	s, e, cands, ok := FindNamedBlock(goSrc, "x.go", "func", "beta")
+	s, e, cands, ok := FindNamedBlock(goSrc, "x.go", "func", "beta", 0)
 	if !ok || len(cands) != 1 {
 		t.Fatalf("beta: ok=%v cands=%v", ok, cands)
 	}
@@ -110,12 +110,12 @@ func TestFindNamedBlock(t *testing.T) {
 
 	// Word-bounded: "beta" must not match "betamax".
 	src2 := []byte("func betamax() {\n\treturn\n}\n")
-	if _, _, _, ok := FindNamedBlock(src2, "x.go", "func", "beta"); ok {
+	if _, _, _, ok := FindNamedBlock(src2, "x.go", "func", "beta", 0); ok {
 		t.Error("beta matched betamax")
 	}
 
 	md := []byte("# Intro\ntext\n\n## Gob Encoding\nbody line\nmore\n\n## Next\nother\n")
-	s, e, _, ok = FindNamedBlock(md, "b.md", "section", "gob")
+	s, e, _, ok = FindNamedBlock(md, "b.md", "section", "gob", 0)
 	if !ok {
 		t.Fatal("section gob not found")
 	}
@@ -123,7 +123,32 @@ func TestFindNamedBlock(t *testing.T) {
 		t.Errorf("section = %q", got)
 	}
 
-	if _, _, _, ok := FindNamedBlock(md, "b.md", "func", "gob"); ok {
+	if _, _, _, ok := FindNamedBlock(md, "b.md", "func", "gob", 0); ok {
 		t.Error("func: should not resolve in Markdown")
+	}
+}
+
+// Ordinal and parent-path disambiguation for named sections
+// (issues.txt #4).
+func TestFindNamedBlockDisambiguation(t *testing.T) {
+	md := []byte("# Top\n## Recipe 8\na\n### Discussion\nfirst\n## Recipe 9\n### Discussion\nsecond\n")
+
+	_, _, cands, ok := FindNamedBlock(md, "r.md", "section", "Discussion", 0)
+	if !ok || len(cands) != 2 {
+		t.Fatalf("plain: ok=%v cands=%v", ok, cands)
+	}
+
+	s, e, _, ok := FindNamedBlock(md, "r.md", "section", "Discussion", 2)
+	if !ok || !strings.Contains(string(md[s:e]), "second") {
+		t.Errorf("ordinal 2 = %q", md[s:e])
+	}
+
+	if _, _, _, ok := FindNamedBlock(md, "r.md", "section", "Discussion", 3); ok {
+		t.Error("ordinal 3 should not resolve (only 2 candidates)")
+	}
+
+	s, e, cands, ok = FindNamedBlock(md, "r.md", "section", "Recipe 9/Discussion", 0)
+	if !ok || len(cands) != 1 || !strings.Contains(string(md[s:e]), "second") {
+		t.Errorf("parent path: ok=%v cands=%v block=%q", ok, cands, md[s:e])
 	}
 }

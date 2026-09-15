@@ -7,22 +7,23 @@ import (
 	"strings"
 )
 
-// LoadConfigArgs reads the agrep config file and returns parsed arguments.
+// LoadConfigArgs reads the agrep config file and returns parsed
+// arguments plus the file's path (for attribution in warnings).
 // Config file location: AGREP_CONFIG_PATH env var, ~/.agrep, or ~/.gogrep
 // (pre-rename fallback so existing configs keep working).
 // Format: one flag per line, # comments, empty lines ignored.
 // Returns nil if no config file found.
-func LoadConfigArgs() []string {
+func LoadConfigArgs() ([]string, string) {
 	var f *os.File
 	if path := os.Getenv("AGREP_CONFIG_PATH"); path != "" {
 		var err error
 		if f, err = os.Open(path); err != nil {
-			return nil
+			return nil, ""
 		}
 	} else {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return nil
+			return nil, ""
 		}
 		for _, name := range []string{".agrep", ".gogrep"} {
 			if f, err = os.Open(filepath.Join(home, name)); err == nil {
@@ -31,7 +32,7 @@ func LoadConfigArgs() []string {
 			f = nil
 		}
 		if f == nil {
-			return nil
+			return nil, ""
 		}
 	}
 	defer f.Close()
@@ -45,5 +46,5 @@ func LoadConfigArgs() []string {
 		}
 		args = append(args, line)
 	}
-	return args
+	return args, f.Name()
 }
