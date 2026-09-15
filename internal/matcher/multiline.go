@@ -14,9 +14,11 @@ package matcher
 // prefilter only anchors at match starts or gates whole buffers, never
 // confining verification to a line. The stdlib engine remains the
 // fallback for constructs the internal one rejects and for non-ASCII
-// case folding; it has no prefilter under (?i), which made every
-// lowercase -U query under smart-case a 3-4s whole-tree NFA walk
-// (report bug 2).
+// case folding; it has no prefilter of its own under (?i), which made
+// every lowercase -U query under smart-case a 3-4s whole-tree NFA walk
+// (report bug 2). Falling back still gets a SIMD literal gate (below)
+// when every pattern yields a required ASCII literal, which covers the
+// non-ASCII case-insensitive patterns that can't use the fast DFA.
 
 import (
 	"bytes"
@@ -24,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/DanielLaubacher/agrep/internal/regex"
+	"github.com/DanielLaubacher/agrep/internal/simd"
 )
 
 // mlEngine is what MultilineMatcher needs from a regex engine.
@@ -47,6 +50,70 @@ func (e stdMLEngine) FindAllIndex(b []byte, n int) [][2]int {
 		out[i] = [2]int{l[0], l[1]}
 	}
 	return out
+}
+
+// literalGatedEngine wraps an mlEngine with a SIMD "may this buffer
+// match at all" gate: a buffer containing none of the per-pattern
+// required literals cannot match any OR'd pattern, so the (unprefiltered,
+// possibly non-ASCII-case-folding) inner engine is skipped entirely. lits
+// is empty only via mlLiteralPrefilter returning nil, in which case this
+// wrapper is not used at all — see NewMultilineMatcher.
+type literalGatedEngine struct {
+	inner mlEngine
+	lits  [][]byte // lowercased ASCII literals, one per OR'd pattern
+}
+
+func (e literalGatedEngine) mayMatch(b []byte) bool {
+	for _, lit := range e.lits {
+		if simd.IndexCaseInsensitive(b, lit) >= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (e literalGatedEngine) Match(b []byte) bool {
+	return e.mayMatch(b) && e.inner.Match(b)
+}
+
+func (e literalGatedEngine) FindAllIndex(b []byte, n int) [][2]int {
+	if !e.mayMatch(b) {
+		return nil
+	}
+	return e.inner.FindAllIndex(b, n)
+}
+
+// mlLiteralPrefilter returns one required ASCII literal per pattern
+// (lowercased so simd.IndexCaseInsensitive can gate case-insensitively),
+// or nil if any pattern has no extractable literal — a match of that
+// pattern could occur without any literal present, so no sound "any
+// literal present" gate exists and the caller must skip the fast path
+// entirely rather than risk a missed match.
+func mlLiteralPrefilter(patterns []string, fixed, ignoreCase bool) [][]byte {
+	lits := make([][]byte, 0, len(patterns))
+	for _, p := range patterns {
+		var lit string
+		if fixed {
+			if !allASCII([]string{p}) {
+				return nil
+			}
+			lit = p
+			if ignoreCase {
+				lit = strings.ToLower(lit)
+			}
+		} else {
+			li, ok := extractLiteral(p, ignoreCase)
+			if !ok {
+				return nil
+			}
+			lit = li.literal
+		}
+		if len(lit) < minPrefilterLen {
+			return nil
+		}
+		lits = append(lits, []byte(lit))
+	}
+	return lits
 }
 
 type MultilineMatcher struct {
@@ -79,7 +146,11 @@ func NewMultilineMatcher(patterns []string, fixed bool, ignoreCase bool, opts Ma
 	if err != nil {
 		return nil, err
 	}
-	return &MultilineMatcher{re: stdMLEngine{re}, needLineNums: opts.NeedLineNums}, nil
+	var engine mlEngine = stdMLEngine{re}
+	if lits := mlLiteralPrefilter(patterns, fixed, ignoreCase); lits != nil {
+		engine = literalGatedEngine{inner: engine, lits: lits}
+	}
+	return &MultilineMatcher{re: engine, needLineNums: opts.NeedLineNums}, nil
 }
 
 func (m *MultilineMatcher) MatchExists(data []byte) bool {

@@ -90,8 +90,8 @@ func fileSource(cfg Config, paths []string) (<-chan walker.FileEntry, *walkErrs,
 			return nil, nil, err
 		}
 		ch := make(chan walker.FileEntry, len(list))
-		for _, p := range list {
-			ch <- walker.FileEntry{Path: p}
+		for i, p := range list {
+			ch <- walker.FileEntry{Path: p, Seq: i + 1}
 		}
 		close(ch)
 		return ch, nil, nil
@@ -103,8 +103,8 @@ func fileSource(cfg Config, paths []string) (<-chan walker.FileEntry, *walkErrs,
 			return nil, nil, err
 		}
 		ch := make(chan walker.FileEntry, len(list))
-		for _, p := range list {
-			ch <- walker.FileEntry{Path: p}
+		for i, p := range list {
+			ch <- walker.FileEntry{Path: p, Seq: i + 1}
 		}
 		close(ch)
 		return ch, nil, nil
@@ -124,8 +124,8 @@ func fileSource(cfg Config, paths []string) (<-chan walker.FileEntry, *walkErrs,
 	}
 
 	ch := make(chan walker.FileEntry, len(paths))
-	for _, p := range paths {
-		ch <- walker.FileEntry{Path: p}
+	for i, p := range paths {
+		ch <- walker.FileEntry{Path: p, Seq: i + 1}
 	}
 	close(ch)
 	return ch, nil, nil

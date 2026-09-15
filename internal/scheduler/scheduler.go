@@ -39,30 +39,21 @@ func New(workers int, m matcher.Matcher, r input.Reader, filesOnly bool, countOn
 }
 
 // seqSource hands out files together with their walk-order sequence
-// numbers. Receive and numbering happen under one lock, so the sequence
-// is exactly the channel's delivery order — workers claiming numbers
-// after an unlocked receive could number files out of order, making
-// output order (and therefore budgeted output) vary between runs. A
-// lock around the receive costs one uncontended lock per file; the
-// alternative — a tagger goroutine relaying entries through a second
-// channel — cost ~20ms on a 65K-file tree.
+// numbers. Every fileSource (the walker, --files-from, --changed-since,
+// --use-index) is itself a single sequential producer, so it stamps
+// FileEntry.Seq once at send time — numbering files here, after an
+// unlocked receive, would let concurrent workers observe them out of
+// order and make output order (and therefore budgeted output) vary
+// between runs. Reading the pre-stamped Seq back needs no lock at all.
 type seqSource struct {
-	mu    sync.Mutex
 	files <-chan walker.FileEntry
-	seq   int
 }
 
 // next returns the next file and its sequence number; ok is false once
 // the channel is closed and drained.
 func (s *seqSource) next() (entry walker.FileEntry, seq int, ok bool) {
-	s.mu.Lock()
 	entry, ok = <-s.files
-	if ok {
-		s.seq++
-		seq = s.seq
-	}
-	s.mu.Unlock()
-	return entry, seq, ok
+	return entry, entry.Seq, ok
 }
 
 // Run processes files from the file channel and returns results on the result channel.

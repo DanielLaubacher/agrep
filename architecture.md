@@ -330,23 +330,39 @@ parallel chunking" above).
 
 ## Performance vs ripgrep
 
-Measured 2026-09 against ripgrep 15.1.0 (29MB/500K-line corpus and
-/usr/include; hyperfine; both tools with equivalent smart-case/hidden
-config). agrep wins or ties every benchmarked workload:
+Measured 2026-09-15 against ripgrep 15.1.0 (29MB/500K-line corpus and
+/usr/include; hyperfine `-N`, `AGREP_CONFIG_PATH=/dev/null` and
+`rg --no-config` for neutral configs on both sides). agrep wins most
+benchmarked workloads, sometimes by a wide margin, but it does **not**
+win or tie everything: a recursive multi-word literal-phrase search
+(`static inline`) currently loses to ripgrep's tuned `memchr`-based
+literal scan, and recursive full-output text search is a coin-flip tie.
+Numbers are noisy at this scale (single-digit milliseconds) — treat
+anything under ~1.2x as a tie, not a win:
 
-| Workload | agrep | rg |
-|---|---|---|
-| `ERROR.*port [0-9]+` full output (29MB) | 6.9ms | 6.5ms (tie) |
-| `ERROR.*port [0-9]+` `-c` | **3.8ms** | 7.4ms |
-| `[a-zA-Z]+@[a-zA-Z]+\.[a-zA-Z]+` output | **5.2ms** | 7.1ms |
-| `\d{4}-\d{2}-\d{2}` `-c` | **4.3ms** | 19.5ms |
-| `[A-Z]{2,}` `-c` | **4.9ms** | 53.4ms |
-| `-F -e error -e errno -e errcode` | **6.8ms** | 11.6ms |
-| fixed string `-n` | **8.5ms** | 20.2ms |
-| no-match | **3.0ms** | 8.2ms |
-| recursive `define` `-l` (/usr/include) | **112ms** | 184ms |
-| recursive `define` `-n` (101MB output) | 273ms | 267ms (tie) |
-| recursive `err(or\|no\|code)` `-l` | **140ms** | 153ms |
+| Workload | agrep | rg | result |
+|---|---|---|---|
+| `ERROR.*port [0-9]+` full output (29MB) | 6.0ms | 6.3ms | tie |
+| `ERROR.*port [0-9]+` `-c` | **3.5ms** | 6.0ms | agrep 1.7x |
+| `[a-zA-Z]+@[a-zA-Z]+\.[a-zA-Z]+` output | **3.8ms** | 4.4ms | agrep 1.2x |
+| `\d{4}-\d{2}-\d{2}` `-c` | **3.9ms** | 14.5ms | agrep 3.8x |
+| `[A-Z]{2,}` `-c` | **3.5ms** | 46.8ms | agrep 13.4x |
+| `-F -e error -e warning -e critical` | **3.6ms** | 6.7ms | agrep 1.9x |
+| fixed string `-n` | **20.0ms** | 22.2ms | agrep 1.1x (tie) |
+| no-match | **3.0ms** | 3.7ms | agrep 1.2x |
+| recursive `define` `-l` (/usr/include, 809MB) | **107.5ms** | 234.9ms | agrep 2.2x |
+| recursive `define` `-n` (101MB output) | 259.1ms | 239.6ms | rg 1.1x (tie) |
+| recursive `err(or\|no\|code)` `-l` | 155.0ms | 161.2ms | agrep 1.0x (tie) |
+| recursive `static inline` `-l` (/usr/include) | 135.5ms | **117.6ms** | **rg 1.2x faster** |
+
+The honest summary: agrep is faster on most single-file counting/regex
+workloads and on recursive file-listing searches driven by a rare
+literal, competitive (ties, either direction, within noise) on plain
+recursive text output, and currently behind on recursive searches for a
+common multi-word literal phrase. Reproduce with the exact commands
+above plus `hyperfine -N --warmup 3`; both tools need a neutral config
+(`AGREP_CONFIG_PATH=/dev/null`, `rg --no-config`) or a locally-injected
+`~/.agrep`/`~/.ripgreprc` will skew the comparison.
 
 ### Assertions, -w, -U and globs (2026-09-15 regression report)
 

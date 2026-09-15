@@ -30,11 +30,14 @@ type Dirent struct {
 	Type uint8
 }
 
-// ParseDirents parses raw getdents64 output into Dirent structs.
-// buf must contain the raw bytes returned by unix.Getdents.
-// dst is reused to avoid per-call slice allocation; pass nil on first call.
+// ParseDirents parses raw getdents64 output into Dirent structs, appending
+// them onto dst (which is reused to avoid per-call slice allocation; pass
+// nil on first call). Unlike a reset-then-fill parse, appending lets a
+// caller accumulate several getdents64 batches for one directory into a
+// single slice without an extra copy — callers wanting one batch's worth
+// alone must pass dst[:0] themselves.
 func ParseDirents(buf []byte, n int, dst []Dirent) []Dirent {
-	entries := dst[:0]
+	entries := dst
 	offset := 0
 
 	for offset < n {

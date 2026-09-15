@@ -819,10 +819,11 @@ func appendSuggestReport(buf []byte, patterns []string, probes []suggestProbe, j
 func probeCount(paths []string, m matcher.Matcher, reader input.Reader, cfg Config) (lines, files int) {
 	var lineCount, fileCount atomic.Int64
 
-	fileCh, _, err := fileSource(cfg, paths)
+	fileCh, werrs, err := fileSource(cfg, paths)
 	if err != nil {
 		return 0, 0
 	}
+	defer logWalkErrs(werrs)
 	sched := scheduler.New(cfg.Workers, m, reader, false, true)
 	for r := range sched.Run(fileCh) {
 		if r.Err == nil && r.MatchCount > 0 {

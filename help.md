@@ -19,11 +19,13 @@ Short flags can be combined: `-rin` is equivalent to `-r -i -n`.
 |---|---|---|
 | `--regexp PATTERN` | `-e` | Pattern to match (repeatable; multiple = OR, or AND with `-t`) |
 | `--fixed-strings` | `-F` | Treat next `-e` pattern as a literal string, not a regex |
-| `--perl-regexp` | `-P` | Use PCRE2 for next `-e` pattern |
+| `--perl-regexp` | `-P` | Use PCRE2 for next `-e` pattern. **Not available in the default build** (`make build`) — `-P` errors with `PCRE support not compiled in`. Build `bin/agrep-pcre` with `make build-pcre` (`-tags pcre`) to use it; the default build skips PCRE to avoid a ~5ms/invocation startup tax from its C-library init. |
 | `--pipe` | `-t` | Pipe: next `-e` filters lines matched by the previous `-e` |
 | `--only-matching` | `-o` | Print only the matched part of the line for next `-e` |
+| `--word-regexp` | `-w` | Match only whole words: `\b(?:PATTERN)\b` |
 | `--ignore-case` | `-i` | Case-insensitive matching |
 | `--smart-case` | `-S` | Case-insensitive if pattern is all lowercase |
+| `--case-sensitive` | `-s` | Force case-sensitive, overriding earlier `-i`/`-S` — including flags injected by `AGREP_CONFIG_PATH`/`~/.agrep` |
 | `--invert-match` | `-v` | Select lines that do NOT match |
 
 **Per-stage flags**: `-F`, `-P`, `-t`, `-o` are per-stage modifiers that apply to the next `-e` and reset after it. They can be combined with short flag syntax: `-Ftoe 'pattern'` = fixed + pipe + only-matching. `-e` must be last in any combined group since it takes a value.
@@ -37,8 +39,9 @@ Short flags can be combined: `-rin` is equivalent to `-r -i -n`.
 | `--files-with-matches` | `-l` | Print only filenames containing matches |
 | `--color MODE` | | Color output: `auto` (default), `always`, `never` |
 | `--colour MODE` | | Alias for `--color` |
-| `--max-columns NUM` | `-M` | Truncate lines longer than NUM bytes (0=auto, -1=no limit) |
+| `--max-columns NUM` | `-M` | Truncate lines longer than NUM bytes (0=auto, -1=no limit); a "..." marks each cut edge |
 | `--json` | | Output results as JSON Lines |
+| `--compact` | | With `--json`: lean match records (file, line, region, text — no span/byte_offset/matches), cheaper for reading many matches |
 
 ### Context
 
@@ -58,6 +61,16 @@ Short flags can be combined: `-rin` is equivalent to `-r -i -n`.
 | `--hidden` | | Search hidden files and directories |
 | `--follow` | `-L` | Follow symbolic links |
 | `--watch` | | Watch files for changes and search new content |
+
+### Multiline & Structural Matching
+
+| Flag | Short | Description |
+|---|---|---|
+| `--multiline` | `-U` | Patterns may match across lines; output spans the whole matched block (regex only; `^`/`$` still anchor per line) |
+| `--structural PATTERN` | | PATTERN is a structural template with `:[name]` holes, matched lazily within balanced delimiters |
+| `--lang NAME` | | Language family for `--structural` string/comment handling: `go py js c rs sh rb md` (auto-detected from a single file argument; `generic` otherwise, with a warning) |
+| `--capture NAME` | | With `--structural --histogram`: aggregate one hole's captured text instead of full matches |
+| `--block` | | Emit each match's whole enclosing definition block (function/class body; Markdown section) instead of just the matching line |
 
 ## Exit Codes
 
@@ -163,7 +176,9 @@ agrep -F -e "connection refused" -e "timeout" -e "EOF" app.log
 
 ### PCRE2 Regex
 
-Use Perl-compatible regex for lookahead, lookbehind, backreferences:
+Use Perl-compatible regex for lookahead, lookbehind, backreferences.
+**Requires `make build-pcre`** (`bin/agrep-pcre`) — the default `bin/agrep`
+build stubs `-P` out and errors with `PCRE support not compiled in`:
 
 ```sh
 # Lookahead: words followed by "world"
@@ -185,8 +200,16 @@ agrep --json "error" app.log
 ```
 
 ```json
-{"type":"match","file":"app.log","line_number":42,"byte_offset":1847,"text":"2024-01-15 ERROR: connection refused","matches":[[15,20]]}
+{"type":"match","file":"app.log","line_number":42,"byte_offset":1847,"text":"2024-01-15 ERROR: connection refused","matches":[{"start":11,"end":16}],"span":[1847,1883],"region":"app.log@1847-1883"}
+{"type":"summary","files":1,"lines":1,"errors":0}
 ```
+
+Every run ends with a `{"type":"summary",...}` trailer carrying exact
+totals (`files`, `lines`, `errors`) — see [Agent options](#agent-options)
+below. `span` is the line's absolute byte range in the file; `region` is
+the self-contained `path@start-end` id `--get-region` re-fetches. Add
+`--compact` to drop `span`/`byte_offset`/`matches` when you only need
+`region` for later verification.
 
 ### Watch Mode
 
@@ -280,12 +303,15 @@ agrep -Fe 'ERROR' -toe '\d+' -Fe 'WARN' app.log
 
 ### Searching Binary Files
 
-agrep automatically detects binary files (by checking for NUL bytes in the first 8 KB). Binary files with matches print a summary instead of the matched content:
+agrep automatically detects binary files (by checking for NUL bytes in the first 8 KB) and skips them entirely during a search — no summary line, no match reported, same as ripgrep's default. A binary file is never opened for anything other than that 8 KB probe:
 
 ```sh
 agrep -r "magic" ./data/
-# Binary file ./data/archive.bin matches
+# archive.bin is silently excluded even if it contains "magic";
+# exit code is 1 (no match) if nothing else in the tree matches
 ```
+
+There is currently no flag to force-search a file agrep has classified as binary; extract or convert its content first if you need to search it.
 
 ## Agent options
 
@@ -293,20 +319,26 @@ Designed for AI agents using agrep as a sensing API (see agent-mode.md):
 
 | Flag | Description |
 |---|---|
-| `--max-tokens N` | Budget output to ~N tokens (4 bytes/token heuristic). Search always completes; a trailer reports exactly what was omitted. |
-| `--outline` | Per-file survey: `count TAB path TAB first-matching-line`, busiest files first. |
-| `--top K` | Limit `--outline` to the K busiest files. |
+| `--ident` | Match the pattern as an identifier: every case convention (camelCase, snake_case, kebab-case, SCREAMING_CASE), word-bounded. |
+| `--max-tokens N` | Budget output to ~N tokens (4 bytes/token heuristic). Search always completes; a trailer reports exactly what was omitted, and totals stay exact. |
+| `--outline` | Per-file survey (count + one exemplar matching line), busiest files first. |
+| `--top K` | Limit `--outline`/`--histogram` to the K busiest entries. |
+| `--histogram` | Count distinct matched texts (`uniq -c` built in); composes with `-o` pipelines. |
+| `--rank MODE` | `--outline` ordering: `count` (default), `density` (matches/KB, demotes vendored/generated files), or `defs` (definition lines first, demotes tests). |
+| `--collapse` | Suppress repeats of an identical match line after the 3rd occurrence (stops a generated file from repeating one line hundreds of times); the summary reports exactly what was collapsed and totals stay true. |
 | `--sections` | Annotate matches with the enclosing Markdown heading (`§` group lines in text, `"section"` field in JSON). |
-| `--batch FILE` | Run every pattern in FILE (one per line, `#` comments) in a single pass; each file is read once. Results carry their query (`[pattern]` prefix / `"query"` field). |
-| `--suggest` | On zero hits, probe the case-insensitive form and identifier fragments of the pattern; report which occur and where. |
-| `--get-region PATH@START-END` | Print the exact bytes of a span id (as emitted in JSON `"region"`). Lets an agent re-fetch or verify a citation without re-reading the file. |
-| `--use-index` | Build (first use) and use a trigram index for recursive search. Every query re-validates freshness with a parallel stat sweep and transparently reindexes on any drift — reindexes are incremental (only changed files are read), so the index is always current and can never miss a match. Falls back to a cold scan whenever it doesn't apply (different walk options, `-v`, PCRE, patterns with no ≥3-byte literal). |
+| `--scope` | Annotate matches with their enclosing definition (func/class/def by language; falls back to the Markdown heading). |
+| `--batch FILE` | Run every pattern in FILE (one per line, blank lines and `#`-prefixed comments skipped) in a single pass; each file is read once. Results carry their query (`[pattern]` prefix / `"query"` field), and zero-hit queries are still listed explicitly. |
+| `--files-from FILE` | Search the files listed in FILE (`-` = stdin), one path per line, instead of walking — lets you compose `agrep -rl ... \| agrep --files-from - ...`. |
+| `--changed-since REF` | Search only files changed since the git REF, plus untracked files (requires git). |
+| `--with-file PAT` | Only report files that also contain PAT (repeatable). |
+| `--without-file PAT` | Only report files that do not contain PAT (repeatable). |
+| `--suggest` | On zero hits, probe derived variants of the pattern (case, identifier fragments) and report which actually occur — always reports something, even "none of the variants occur." |
+| `--get-region SPAN` | Print exact bytes for `path@start-end`, whole lines for `path@:120-160` (1-based), a whole definition for `path@func:Name`, or a whole Markdown section for `path@section:Name` (append `#N` to pick the Nth candidate; `Parent/Child` matches nested headings). With `--json`, emits one `{"type":"region"}` record. |
+| `--expand N` | Widen `--get-region` by N whole lines on each side. |
+| `--use-index` | Build (first use) and use a trigram index for a recursive search over exactly one root path (not combined with `--structural` or `--files-from`, and not when multiple paths are given). Every query re-validates freshness with a parallel stat sweep and reindexes incrementally on any drift, so results stay current. When the pattern can't be literal-pruned (`-v`, a PCRE stage, or no literal ≥3 bytes), the index still saves the directory walk — every indexed file becomes a candidate and the real matcher verifies each one. A true fallback to a cold walk happens only if the index was built with different walk options (`--hidden`/`--no-ignore`/`--follow` changed since) or fails to load. |
 | `--clear-index PATH` | Delete index state for every indexed root at or under PATH (e.g. an accidentally indexed `node_modules`). |
-| `--skill` | Print operating instructions for an AI agent (~850 tokens): the survey→expand→narrow→cite→verify workflow, JSON contract, and rules of thumb. Load it into an agent's context instead of `--help`, which is a flag reference for humans. |
-
-JSON output (`--json`) always includes real line numbers, plus `"span"`
-(absolute byte range of the line) and `"region"` (a self-contained id for
-`--get-region`).
+| `--skill` | Print operating instructions for an AI agent (~3K tokens): the survey→expand→narrow→cite→verify workflow, JSON contract, and rules of thumb. Load it into an agent's context instead of `--help`, which is a flag reference for humans. |
 
 Example agent workflow over a book corpus:
 

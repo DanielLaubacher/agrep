@@ -42,8 +42,13 @@ func openDir(path string) (int, error) {
 }
 
 // FileEntry represents a file discovered during directory traversal.
+// Seq is a 1-based, contiguous, emission-order sequence number: the
+// walker (and every other fileSource) is a single sequential producer,
+// so stamping it here is free, unlike numbering it downstream where
+// concurrent workers would need to serialize on a lock to preserve order.
 type FileEntry struct {
 	Path string
+	Seq  int
 }
 
 // WalkOptions configures directory traversal behavior.
@@ -70,6 +75,7 @@ func Walk(roots []string, opts WalkOptions) (<-chan FileEntry, <-chan error) {
 		defer close(errCh)
 
 		if !opts.Recursive {
+			seq := 0
 			for _, root := range roots {
 				var stat unix.Stat_t
 				if err := unix.Stat(root, &stat); err != nil {
@@ -77,7 +83,8 @@ func Walk(roots []string, opts WalkOptions) (<-chan FileEntry, <-chan error) {
 					continue
 				}
 				if stat.Mode&unix.S_IFMT == unix.S_IFREG {
-					fileCh <- FileEntry{Path: root}
+					seq++
+					fileCh <- FileEntry{Path: root, Seq: seq}
 				}
 			}
 			return
@@ -126,7 +133,7 @@ func Walk(roots []string, opts WalkOptions) (<-chan FileEntry, <-chan error) {
 		tw.startListers()
 		for _, it := range items {
 			if it.node == nil {
-				fileCh <- FileEntry{Path: it.path}
+				tw.sendFile(it.path)
 				continue
 			}
 			tw.emit(it.node)
@@ -147,6 +154,10 @@ type treeWalker struct {
 	includeBinary  bool
 	globs          []string
 
+	// seq numbers emitted files. Only the single emitter goroutine (the
+	// one running emit/sendFile) ever touches it, so it needs no lock.
+	seq int
+
 	mu      sync.Mutex
 	cond    *sync.Cond // signaled when a directory is queued or the walk is done
 	queue   []*dirNode // directories awaiting listing (LIFO: stays near the emitter's DFS position)
@@ -154,14 +165,16 @@ type treeWalker struct {
 	done    bool       // no directory left to list
 }
 
-// dirNode is one directory's listing. Listers fill items/errs and close
-// ready; the emitter waits on ready and replays items in order. Items
-// are already sorted, filtered, and classified, so the emitter does no
-// syscalls — it only sends.
+// dirNode is one directory's listing. Listers fill items/errs and set
+// ready under treeWalker.mu (broadcasting treeWalker.cond); the emitter
+// waits on ready and replays items in order. Items are already sorted,
+// filtered, and classified, so the emitter does no syscalls — it only
+// sends. ready shares the treeWalker's single cond/mutex instead of each
+// node allocating its own channel — cheap on trees with many directories.
 type dirNode struct {
 	path    string
 	ignores []ignoreLayer
-	ready   chan struct{}
+	ready   bool
 	items   []dirItem
 	errs    []error
 }
@@ -174,7 +187,7 @@ type dirItem struct {
 }
 
 func newDirNode(path string, ignores []ignoreLayer) *dirNode {
-	return &dirNode{path: path, ignores: ignores, ready: make(chan struct{})}
+	return &dirNode{path: path, ignores: ignores}
 }
 
 // startListers launches the directory-listing pool. It exits on its own
@@ -185,13 +198,16 @@ func (tw *treeWalker) startListers() {
 	}
 }
 
-// enqueue queues a directory for listing.
+// enqueue queues a directory for listing. Broadcast (not Signal): the
+// same cond also wakes the emitter waiting on a specific node's ready
+// flag (see dirNode), and a Signal can be absorbed by that unrelated
+// waiter, leaving every lister asleep.
 func (tw *treeWalker) enqueue(n *dirNode) {
 	tw.mu.Lock()
 	tw.queue = append(tw.queue, n)
 	tw.pending++
 	tw.mu.Unlock()
-	tw.cond.Signal()
+	tw.cond.Broadcast()
 }
 
 // dequeue returns the next directory to list, blocking while the queue
@@ -242,7 +258,11 @@ func (tw *treeWalker) lister() {
 // downstream derive from emission order, so budgeted or truncated
 // output must not vary between runs.
 func (tw *treeWalker) emit(n *dirNode) {
-	<-n.ready
+	tw.mu.Lock()
+	for !n.ready {
+		tw.cond.Wait()
+	}
+	tw.mu.Unlock()
 	for _, err := range n.errs {
 		tw.errCh <- err
 	}
@@ -250,9 +270,15 @@ func (tw *treeWalker) emit(n *dirNode) {
 		if it.child != nil {
 			tw.emit(it.child)
 		} else {
-			tw.fileCh <- FileEntry{Path: it.path}
+			tw.sendFile(it.path)
 		}
 	}
+}
+
+// sendFile emits one file with the next sequence number.
+func (tw *treeWalker) sendFile(path string) {
+	tw.seq++
+	tw.fileCh <- FileEntry{Path: path, Seq: tw.seq}
 }
 
 // list reads one directory, sorts its entries by name, and classifies
@@ -261,7 +287,12 @@ func (tw *treeWalker) emit(n *dirNode) {
 // a lister first. The directory fd is closed before returning. Returns
 // the scratch slice for reuse.
 func (tw *treeWalker) list(n *dirNode, buf []byte, scratch []Dirent) []Dirent {
-	defer close(n.ready)
+	defer func() {
+		tw.mu.Lock()
+		n.ready = true
+		tw.mu.Unlock()
+		tw.cond.Broadcast()
+	}()
 	path, ignores := n.path, n.ignores
 
 	fd, err := openDir(path)
@@ -270,7 +301,11 @@ func (tw *treeWalker) list(n *dirNode, buf []byte, scratch []Dirent) []Dirent {
 		return scratch
 	}
 
-	var entries []Dirent
+	// Reuse scratch's backing array across getdents64 batches (and across
+	// directories via the returned slice) — ParseDirents appends, so every
+	// batch for this directory lands directly in entries with no second
+	// copy.
+	entries := scratch[:0]
 	for {
 		cnt, err := unix.Getdents(fd, buf)
 		if err != nil {
@@ -280,8 +315,7 @@ func (tw *treeWalker) list(n *dirNode, buf []byte, scratch []Dirent) []Dirent {
 		if cnt == 0 {
 			break
 		}
-		scratch = ParseDirents(buf, cnt, scratch)
-		entries = append(entries, scratch...)
+		entries = ParseDirents(buf, cnt, entries)
 	}
 	unix.Close(fd)
 
@@ -368,7 +402,7 @@ func (tw *treeWalker) list(n *dirNode, buf []byte, scratch []Dirent) []Dirent {
 			tw.enqueue(c)
 		}
 	}
-	return scratch
+	return entries
 }
 
 // joinPath concatenates a directory and entry name with a single separator.

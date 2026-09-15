@@ -2,7 +2,7 @@
 
 > **v0.0.1** | **Experimental** — APIs and flags may change without notice.
 
-Search built for AI agents. agrep is a high-performance grep alternative in pure Go (Linux AMD64, AVX2-accelerated, [beats or ties ripgrep](architecture.md#performance-vs-ripgrep) across its benchmark suite) — but speed is the table stakes, not the point. The point is that agents use search differently than humans, and no existing tool is built for how they use it.
+Search built for AI agents. agrep is a high-performance grep alternative in pure Go (Linux AMD64, AVX2-accelerated, [competitive with ripgrep](architecture.md#performance-vs-ripgrep) — faster on most benchmarked workloads, slower on a few) — but speed is the table stakes, not the point. The point is that agents use search differently than humans, and no existing tool is built for how they use it.
 
 <p align="center">
   <img src="https://static.wikia.nocookie.net/arrow/images/2/24/Vibe_with_his_powers_restored.png" alt="Vibe" width="300">
@@ -50,7 +50,7 @@ Full flag reference: [help.md](help.md).
 
 ## Driving it from an agent
 
-Run `agrep --skill` to print the agent operating manual (~1K tokens) — made to be loaded straight into an agent's context. It teaches the loop below; everything emits JSON-Lines with `--json`.
+Run `agrep --skill` to print the agent operating manual (~3K tokens) — made to be loaded straight into an agent's context. It teaches the loop below; everything emits JSON-Lines with `--json`.
 
 ```sh
 # 1. Survey: who talks about the concept? (a few hundred tokens, any corpus size)
@@ -127,7 +127,7 @@ The division of labor is the whole trick: **the agent brings the semantics** (it
 
 ## Performance
 
-agrep wins or ties ripgrep on every workload in its benchmark suite (up to 10.9x faster on single-file counts, ~1.5x on recursive `-l`). The measured table is in [architecture.md](architecture.md#performance-vs-ripgrep); the full optimization story — SIMD Horspool, rare-pair Teddy, the lazy-DFA regex engine, closing and passing the ripgrep gap — is written up in [`education/`](education/).
+agrep beats ripgrep on most benchmarked workloads (up to 13x faster on single-file regex counts, ~2x on recursive `-l` driven by a rare literal), ties on plain recursive text output, and currently loses on recursive searches for a common multi-word literal phrase, where ripgrep's tuned `memchr` scan wins. The measured table — numbers, exact commands, and that losing case — is in [architecture.md](architecture.md#performance-vs-ripgrep); the full optimization story — SIMD Horspool, rare-pair Teddy, the lazy-DFA regex engine, closing and passing the ripgrep gap — is written up in [`education/`](education/).
 
 ## Documentation
 

@@ -202,18 +202,23 @@ func indexedFileChannel(cfg Config, root string) (<-chan walker.FileEntry, bool)
 	go func() {
 		defer close(ch)
 		defer ix.Close()
+		seq := 0
+		send := func(path string) {
+			seq++
+			ch <- walker.FileEntry{Path: path, Seq: seq}
+		}
 		for _, id := range ids {
 			e := ix.Entries[id]
 			if e.Binary || sweep.Stale[id] {
 				continue
 			}
-			ch <- walker.FileEntry{Path: join(e.Path)}
+			send(join(e.Path))
 		}
 		for _, abs := range sweep.Dirty {
 			if rel, err := filepath.Rel(absRoot, abs); err == nil {
-				ch <- walker.FileEntry{Path: join(rel)}
+				send(join(rel))
 			} else {
-				ch <- walker.FileEntry{Path: abs}
+				send(abs)
 			}
 		}
 	}()
