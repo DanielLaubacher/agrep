@@ -39,6 +39,13 @@ func TestSkillTextCoversJSONContract(t *testing.T) {
 		"--without-file",
 		"-U",
 		"@:120-160",
+		"--structural",
+		":[name]",
+		"--lang",
+		"--capture",
+		"--block",
+		`"captures"`,
+		`"truncated"`,
 	}
 	for _, tok := range required {
 		if !strings.Contains(skillText, tok) {

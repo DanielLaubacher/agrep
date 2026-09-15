@@ -110,7 +110,7 @@ block, `(?m)` anchors per line). Spans/regions cover the block, so
 multiline citations verify like any other. Unsupported combos (`-P`,
 `-v`, `-t`, `--watch`) rejected at validation.
 
-## Phase 3 — structural sensing (comby lineage, not AST lineage)
+## Phase 3 (implemented) — structural sensing (comby lineage, not AST lineage)
 
 Analysis of semgrep/ast-grep/comby (TODO.md) settled the direction:
 adopt comby's insight — structural matching needs only balanced

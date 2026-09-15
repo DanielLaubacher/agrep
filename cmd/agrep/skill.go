@@ -60,9 +60,25 @@ normal outcome, not a failure — pair it with --suggest.
   matches camelCase, snake_case, kebab-case, SCREAMING_SNAKE, flat,
   word-bounded (searching Match will not hit MatchSet):
      agrep -rn --ident 'connectTimeout' src/
+- Structural templates: --structural makes the pattern a template
+  with :[name] holes that match lazily within balanced delimiters,
+  across lines, skipping strings/comments (--lang go|py|js|c|rs|sh|rb|md;
+  default generic = delimiters only). Whitespace matches any run.
+     agrep -rn --structural 'NewClient(:[args])' --lang go src/
+  JSON matches carry "captures":{"args":"..."} — the hole bindings.
+  Template text inside strings/comments never matches. One probe
+  answers "call sites and what gets passed", multi-line calls included.
 - Enumerate values: --histogram counts distinct matched texts
   (built-in sort|uniq -c), composing with -o pipelines:
      agrep -r --histogram -oe 'ERR_[A-Z_]+' src/
+  With --structural, aggregate a hole instead of the whole match:
+     agrep -r --structural 'logWarn(:[args])' --lang go \
+           --histogram --capture args src/
+- Whole blocks: --block emits each match as its enclosing definition
+  (function/class body; Markdown: the whole section). Matches in one
+  block dedupe to a single emission; span/region cover exactly the
+  emitted bytes; oversize blocks are cut at 32KB with "truncated":true.
+     agrep -rn --block 'retryPolicy' src/
 - Cross-line shapes: -U lets the pattern match across lines; output
   and span cover the whole block; ^ $ anchor per line. Regex only.
 
@@ -93,7 +109,7 @@ stale. Pays off from the second query; not for one-shot searches.
 
 JSON-Lines, one object per line; "type" discriminates:
   match    {type,file,line_number,byte_offset,text,matches,
-            span,region,section?,scope?,query?}
+            span,region,section?,scope?,captures?,truncated?,query?}
   count    {type,file,count,query?}            with -c
   file     {type,file,query?}                  with -l
   outline  {type,file,count,exemplar}
@@ -133,7 +149,10 @@ next pattern; -o emits only the matched text. Example over a log line
   need locations or magnitudes; prefer --histogram when the question
   is "what values exist" rather than "where".
 - Searching for an identifier? Reach for --ident before crafting
-  case-variant regexes by hand.
+  case-variant regexes by hand. Asking about call sites or arguments?
+  Reach for --structural before regex gymnastics.
+- Need the surrounding function, not the line? --block beats
+  iterating --get-region --expand.
 - Iterating on a branch? --changed-since HEAD (or main) scopes every
   query to the diff surface.
 - Always pass --json when a program (you) consumes the output.
