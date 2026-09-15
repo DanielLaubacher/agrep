@@ -37,7 +37,7 @@ Options:
   -S, --smart-case         Case-insensitive if pattern is all lowercase
   -s, --case-sensitive     Force case-sensitive matching (overrides earlier
                            -i/-S, including flags injected by the config file:
-                           AGREP_CONFIG_PATH, ~/.agrep, or ~/.gogrep)
+                           AGREP_CONFIG_PATH or ~/.agrep)
   -v, --invert-match       Select non-matching lines
   -n, --line-number        Print line numbers
   -c, --count              Print only match count per file

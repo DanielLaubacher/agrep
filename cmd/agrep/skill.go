@@ -116,8 +116,8 @@ normal outcome, not a failure — pair it with --suggest.
 - Case: -i forces case-insensitive (full Unicode folding); -S
   smart-case (insensitive only when the pattern is all-lowercase);
   -s forces case-sensitive and overrides earlier -i/-S — including
-  ones injected by a ~/.agrep or ~/.gogrep config file. If counts
-  differ from grep, check for -S in the config file.
+  ones injected by a ~/.agrep config file. If counts differ from
+  grep, check for -S in the config file.
 - -M N truncates displayed lines to N bytes (0 = 75-byte default,
   -1 = never), snapping to word boundaries. In JSON, an explicit
   -M N windows only "text" (with "truncated":true) — "span",

@@ -1,6 +1,6 @@
 Hello World
 This is a test file
 hello world again
-Testing GoGrep
+Testing agrep
 Another line with Hello
 Final line

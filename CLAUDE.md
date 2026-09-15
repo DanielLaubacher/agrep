@@ -15,6 +15,18 @@ Requires Go 1.26+ with `GOEXPERIMENT=simd` (set automatically by Makefile).
 - `GOEXPERIMENT=simd go test -bench=. -benchmem ./internal/matcher/` — benchmark matchers
 - `GOEXPERIMENT=simd go test -bench=. -benchmem ./internal/simd/` — benchmark SIMD primitives
 
+## Searching This Codebase
+
+Use `bin/agrep` (this project's own binary) instead of `grep`, `rg`, or the Grep tool for every code search. Run `bin/agrep --skill` once per session for the full agent workflow, `bin/agrep --help` for flags. If `bin/agrep` is missing or stale, `make build` first.
+
+- Survey before reading: `bin/agrep -r --outline --top 10 PATTERN .` (one row per file, busiest first; add `--rank defs` for "where is X defined").
+- Read matches under a budget: `bin/agrep -rn --scope --max-tokens 2000 PATTERN .` (`--scope` names the enclosing func; the summary reports exactly what was omitted).
+- Identifiers: `--ident NAME` matches every case convention, word-bounded. Call sites: `--structural 'Fn(:[args])' --lang go`. Whole functions: `--block`.
+- Zero hits: rerun with `--suggest`; it reports which variants occur.
+- Branch work: `--changed-since main` scopes queries to the diff surface.
+- Cite with `--json` region ids and verify with `bin/agrep --get-region 'path@func:Name'` before quoting.
+- `~/.agrep` (or `AGREP_CONFIG_PATH`) injects flags such as `--smart-case` and `--glob=!testdata` into every run. Set `AGREP_CONFIG_PATH=/dev/null` when a search must see the whole tree, and pass `-s` to force case-sensitive.
+
 ## Architecture
 
     CLI (cmd/agrep/main.go) — manual flag parsing, no external framework
