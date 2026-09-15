@@ -116,11 +116,12 @@ func runHistogram(paths []string, m matcher.Matcher, reader input.Reader, stdinR
 			r.Closer()
 		}
 	} else {
-		fileCh, err := fileSource(cfg, paths)
+		fileCh, werrs, err := fileSource(cfg, paths)
 		if err != nil {
 			logWarn("files-from: %v", err)
 			return 2
 		}
+		defer logWalkErrs(werrs)
 		sched := scheduler.New(cfg.Workers, m, reader, false, false)
 		for r := range sched.Run(fileCh) {
 			if r.Err != nil {

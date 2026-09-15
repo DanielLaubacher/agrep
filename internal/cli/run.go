@@ -175,8 +175,12 @@ func Run(cfg Config) int {
 	// Create formatter and writer
 	w := output.NewWriter()
 	var formatter output.Formatter
+	if cfg.Compact && !cfg.JSONOutput {
+		logWarn("--compact has no effect without --json")
+	}
 	if cfg.JSONOutput {
 		jf := output.NewJSONFormatter()
+		jf.Compact = cfg.Compact
 		jf.Sections = cfg.Sections
 		jf.Scope = cfg.Scope
 		jf.CountOnly = cfg.CountOnly
@@ -231,15 +235,36 @@ func Run(cfg Config) int {
 	}
 
 	if cfg.BatchFile != "" {
+		// Never silently ignore a flag the user passed.
+		if cfg.Outline {
+			logWarn("--outline is ignored with --batch")
+		}
+		if cfg.Histogram {
+			logWarn("--histogram is ignored with --batch")
+		}
 		return runBatch(cfg, reader, stdinReader, formatter, w, mode)
 	}
 
 	if cfg.Outline && !readFromStdin {
+		if cfg.UseIndex {
+			logWarn("--use-index is ignored with --outline (no index is built or read)")
+		}
+		if cfg.MaxTokens > 0 {
+			logWarn("--max-tokens is ignored with --outline; use --top K to bound the survey")
+		}
 		return runOutline(paths, m, reader, w, cfg, cfg.JSONOutput)
 	}
 
 	if cfg.Histogram {
 		return runHistogram(paths, m, reader, stdinReader, w, cfg)
+	}
+
+	// --suggest: hold the closing summary back so probe records precede
+	// it — a JSON consumer reads the summary as the stream's last word.
+	var deferred *output.DeferredFinish
+	if cfg.Suggest {
+		deferred = output.NewDeferredFinish(formatter)
+		formatter = deferred
 	}
 
 	var exitCode int
@@ -260,6 +285,9 @@ func Run(cfg Config) int {
 		} else if len(cfg.Patterns) > 0 {
 			runSuggest(cfg.Patterns, paths, reader, w, cfg)
 		}
+	}
+	if deferred != nil {
+		w.Write(deferred.Final(nil))
 	}
 	return exitCode
 }
@@ -332,26 +360,39 @@ func runRecursive(paths []string, m matcher.Matcher, reader input.Reader, format
 			fileCh = ch
 		}
 	}
+	var werrs *walkErrs
 	if fileCh == nil {
-		ch, err := fileSource(cfg, paths)
+		ch, we, err := fileSource(cfg, paths)
 		if err != nil {
 			logWarn("files-from: %v", err)
 			return 2
 		}
 		fileCh = ch
+		werrs = we
 	}
 
 	// Create scheduler and run workers
 	sched := scheduler.New(cfg.Workers, m, reader, mode == searchFilesOnly, mode == searchCountOnly)
 	resultCh := sched.Run(fileCh)
 
-	// Write results in order
+	// Write results in order; walk errors trail the results so they land
+	// in the JSON stream and the summary's errors count.
 	var hasMatch atomic.Bool
+	walkFailed := false
 	ow := output.NewOrderedWriter(w, formatter, true)
-	ow.WriteOrdered(resultCh, func() {
+	ow.WriteOrderedTail(resultCh, func() {
 		hasMatch.Store(true)
+	}, func() []output.Result {
+		errs := werrs.errResults()
+		walkFailed = len(errs) > 0
+		return errs
 	})
 
+	// A failed walk (missing root, unreadable directory) is an error exit
+	// even when other roots matched — absence claims need the caveat.
+	if walkFailed {
+		return 2
+	}
 	if hasMatch.Load() {
 		return 0
 	}

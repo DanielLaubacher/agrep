@@ -33,19 +33,20 @@ type Config struct {
 	Fixed    bool
 	PCRE     bool
 
-	IgnoreCase    bool
-	Recursive     bool
-	LineNumbers   bool
-	CountOnly     bool
-	Invert        bool
-	FileNamesOnly bool
-	OnlyMatch     bool // global -o flag (when no pipelines)
-	ContextBefore int
-	ContextAfter  int
-	WatchMode     bool
-	JSONOutput    bool
-	Color         ColorMode
-	Workers       int
+	IgnoreCase     bool
+	Recursive      bool
+	LineNumbers    bool
+	CountOnly      bool
+	Invert         bool
+	FileNamesOnly  bool
+	OnlyMatch      bool // global -o flag (when no pipelines)
+	ContextBefore  int
+	ContextAfter   int
+	WatchMode      bool
+	JSONOutput     bool
+	Compact        bool // --compact: lean JSON match records (no span/byte_offset/matches)
+	Color          ColorMode
+	Workers        int
 	NoIgnore       bool
 	Hidden         bool
 	FollowSymlinks bool
@@ -56,28 +57,28 @@ type Config struct {
 	Paths          []string
 
 	// Agent-oriented options (see agent-mode.md).
-	Ident     bool   // --ident: match all case conventions of an identifier, word-bounded
-	MaxTokens int    // --max-tokens: output token budget (0 = unlimited)
-	Outline   bool   // --outline: per-file survey instead of match lines
-	Histogram bool   // --histogram: distinct matched texts with counts
-	Rank      string // --rank: outline order — "count" (default) or "density"
-	Collapse  bool   // --collapse: suppress repeats of identical match lines
-	Multiline  bool   // -U/--multiline: patterns may match across lines
-	Structural bool   // -S/--structural: pattern is a template with :[name] holes
-	Lang       string // --lang: language family for -S (default: generic)
-	Capture    string // --capture: hole name for --histogram aggregation
-	Block      bool   // --block: emit the whole enclosing definition block
-	TopK      int    // --top: limit outline/histogram to the K busiest entries
-	Sections  bool   // --sections: annotate matches with Markdown headings
-	Scope     bool   // --scope: annotate matches with the enclosing definition
-	BatchFile string // --batch: file of patterns, one per line
-	FilesFrom    string // --files-from: file of paths to search ('-' = stdin)
-	ChangedSince string // --changed-since REF: only files changed since the git ref
+	Ident        bool     // --ident: match all case conventions of an identifier, word-bounded
+	MaxTokens    int      // --max-tokens: output token budget (0 = unlimited)
+	Outline      bool     // --outline: per-file survey instead of match lines
+	Histogram    bool     // --histogram: distinct matched texts with counts
+	Rank         string   // --rank: outline order — "count" (default), "density", or "defs"
+	Collapse     bool     // --collapse: suppress repeats of identical match lines
+	Multiline    bool     // -U/--multiline: patterns may match across lines
+	Structural   bool     // -S/--structural: pattern is a template with :[name] holes
+	Lang         string   // --lang: language family for -S (default: generic)
+	Capture      string   // --capture: hole name for --histogram aggregation
+	Block        bool     // --block: emit the whole enclosing definition block
+	TopK         int      // --top: limit outline/histogram to the K busiest entries
+	Sections     bool     // --sections: annotate matches with Markdown headings
+	Scope        bool     // --scope: annotate matches with the enclosing definition
+	BatchFile    string   // --batch: file of patterns, one per line
+	FilesFrom    string   // --files-from: file of paths to search ('-' = stdin)
+	ChangedSince string   // --changed-since REF: only files changed since the git ref
 	WithFile     []string // --with-file: file must also contain each of these
 	WithoutFile  []string // --without-file: file must not contain any of these
-	Suggest   bool   // --suggest: on zero hits, probe derived variants
-	GetRegion   string // --get-region: print bytes for a "path@start-end" span
-	ExpandLines int    // --expand N: widen --get-region by N lines each side
+	Suggest      bool     // --suggest: on zero hits, probe derived variants
+	GetRegion    string   // --get-region: print bytes for a "path@start-end" span
+	ExpandLines  int      // --expand N: widen --get-region by N lines each side
 
 	// Index options (see index.md).
 	UseIndex   bool   // --use-index: build/use the trigram index for recursive search

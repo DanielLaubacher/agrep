@@ -4,6 +4,8 @@ package cli
 // See agent-mode.md for the design.
 
 import (
+	"bytes"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +36,14 @@ func runGetRegion(region string, expand int, w *output.Writer) int {
 	}
 	path := region[:at]
 	rangeStr := region[at+1:]
+
+	// Scope-addressable forms: "path@func:Name" returns the whole
+	// definition block, "path@section:Name" the whole Markdown section
+	// — the unit the agent would otherwise read by guessed line range.
+	if kind, name, found := strings.Cut(rangeStr, ":"); found && (kind == "func" || kind == "section") && name != "" {
+		return runGetNamedRegion(path, kind, name, expand, w)
+	}
+
 	lineMode := strings.HasPrefix(rangeStr, ":")
 	if lineMode {
 		rangeStr = rangeStr[1:]
@@ -49,6 +59,10 @@ func runGetRegion(region string, expand int, w *output.Writer) int {
 		logWarn("invalid region range %q", rangeStr)
 		return 2
 	}
+	if lineMode && start < 1 {
+		logWarn("invalid region %q: line numbers are 1-based", region)
+		return 2
+	}
 
 	fd, err := unix.Open(path, unix.O_RDONLY, 0)
 	if err != nil {
@@ -56,6 +70,19 @@ func runGetRegion(region string, expand int, w *output.Writer) int {
 		return 2
 	}
 	defer unix.Close(fd)
+
+	// Strict bounds: a cited region must lie entirely within the file.
+	// A stale or fabricated citation must fail loudly, never "verify"
+	// as silently empty output (report bug 9).
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		logWarn("%s: %v", path, err)
+		return 2
+	}
+	if !lineMode && (start > st.Size || end > st.Size) {
+		logWarn("region %q out of range: %s is %d bytes", region, path, st.Size)
+		return 2
+	}
 
 	// Fast path: exact byte span, no expansion — pread just the range.
 	if !lineMode && expand == 0 {
@@ -68,7 +95,7 @@ func runGetRegion(region string, expand int, w *output.Writer) int {
 				return 2
 			}
 			if n == 0 {
-				break // region extends past EOF: return what exists
+				break
 			}
 			total += n
 		}
@@ -84,18 +111,69 @@ func runGetRegion(region string, expand int, w *output.Writer) int {
 	}
 	var s, e int
 	if lineMode {
-		if start < 1 {
-			start = 1
+		total := countLines(data)
+		if int(start) > total || int(end) > total {
+			logWarn("region %q out of range: %s has %d lines", region, path, total)
+			return 2
 		}
 		s, e = lineRangeToBytes(data, int(start), int(end))
 	} else {
-		s, e = int(min(start, int64(len(data)))), int(min(end, int64(len(data))))
+		s, e = int(start), int(end)
 	}
 	if expand > 0 {
 		s, e = expandByLines(data, s, e, expand)
 	}
 	w.Write(data[s:e])
 	return 0
+}
+
+// runGetNamedRegion resolves "path@func:Name" / "path@section:Name"
+// and prints the whole named block. Ambiguity is never silent: the
+// first candidate is printed and the rest are listed on stderr.
+func runGetNamedRegion(path, kind, name string, expand int, w *output.Writer) int {
+	fd, err := unix.Open(path, unix.O_RDONLY, 0)
+	if err != nil {
+		logWarn("%s: %v", path, err)
+		return 2
+	}
+	defer unix.Close(fd)
+	data, err := readAllFd(fd)
+	if err != nil {
+		logWarn("%s: read: %v", path, err)
+		return 2
+	}
+
+	s, e, candidates, ok := output.FindNamedBlock(data, path, kind, name)
+	if !ok {
+		logWarn("no %s matching %q in %s", kind, name, path)
+		return 2
+	}
+	if len(candidates) > 1 {
+		var lines []string
+		for _, ln := range candidates[1:] {
+			lines = append(lines, strconv.Itoa(ln))
+		}
+		logWarn("%d candidates for %s:%s; showing line %d (others at lines %s — cite %s@:N-M to disambiguate)",
+			len(candidates), kind, name, candidates[0], strings.Join(lines, ", "), path)
+	}
+	if expand > 0 {
+		s, e = expandByLines(data, s, e, expand)
+	}
+	w.Write(data[s:e])
+	if e > s && data[e-1] != '\n' {
+		w.Write([]byte{'\n'})
+	}
+	return 0
+}
+
+// countLines returns the number of lines in data (a trailing byte
+// without a newline still counts as a line).
+func countLines(data []byte) int {
+	n := bytes.Count(data, []byte{'\n'})
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		n++
+	}
+	return n
 }
 
 // readAllFd reads the remaining contents of fd from offset 0.
@@ -210,6 +288,7 @@ func indexByteFrom(data []byte, pos int, c byte) int {
 type outlineEntry struct {
 	path     string
 	count    int
+	defs     int // matching lines that are definition-shaped (--rank defs)
 	size     int // file size in bytes, for density ranking
 	exemplar string
 }
@@ -229,6 +308,7 @@ func outlineFromResult(r *output.Result) (outlineEntry, bool) {
 	bestIdx := -1
 	bestOcc := 0
 	bestCtx := false
+	bestDef := false
 	for i := range ms.Matches {
 		m := &ms.Matches[i]
 		if m.IsContext || m.LineStart < 0 {
@@ -244,13 +324,25 @@ func outlineFromResult(r *output.Result) (outlineEntry, bool) {
 		for _, p := range ms.MatchPositions(i) {
 			matched += p[1] - p[0]
 		}
-		line := strings.TrimSpace(string(ms.Data[m.LineStart : m.LineStart+m.LineLen]))
+		rawLine := ms.Data[m.LineStart : m.LineStart+m.LineLen]
+		isDef := output.IsDefinitionLine(rawLine, r.FilePath)
+		if isDef {
+			entry.defs++
+		}
+		line := strings.TrimSpace(string(rawLine))
 		hasCtx := len(line) > matched
 
-		if bestIdx < 0 || occ > bestOcc || (occ == bestOcc && hasCtx && !bestCtx) {
+		// A definition line is the ideal exemplar; then most
+		// occurrences; then a line with text beyond the matches.
+		better := bestIdx < 0 ||
+			(isDef && !bestDef) ||
+			(isDef == bestDef && occ > bestOcc) ||
+			(isDef == bestDef && occ == bestOcc && hasCtx && !bestCtx)
+		if better {
 			bestIdx = i
 			bestOcc = occ
 			bestCtx = hasCtx
+			bestDef = isDef
 		}
 	}
 	if bestIdx >= 0 {
@@ -270,11 +362,12 @@ func outlineFromResult(r *output.Result) (outlineEntry, bool) {
 func runOutline(paths []string, m matcher.Matcher, reader input.Reader, w *output.Writer, cfg Config, jsonOut bool) int {
 	var entries []outlineEntry
 
-	fileCh, err := fileSource(cfg, paths)
+	fileCh, werrs, err := fileSource(cfg, paths)
 	if err != nil {
 		logWarn("files-from: %v", err)
 		return 2
 	}
+	defer logWalkErrs(werrs)
 	sched := scheduler.New(cfg.Workers, m, reader, false, false)
 	for r := range sched.Run(fileCh) {
 		if r.Err != nil {
@@ -289,10 +382,35 @@ func runOutline(paths []string, m matcher.Matcher, reader input.Reader, w *outpu
 		}
 	}
 
-	if cfg.Rank == "density" {
+	density := cfg.Rank == "density"
+	defsRank := cfg.Rank == "defs"
+	scores := make([]float64, len(entries))
+	if defsRank {
+		// Definitions first: agents ask "where is X defined" far more
+		// often than "where is X mentioned". Tests, vendored, and
+		// generated files sink to the bottom regardless of counts.
+		demoted := func(e *outlineEntry) bool {
+			return demotedPath(e.path) || testPath(e.path)
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			di, dj := demoted(&entries[i]), demoted(&entries[j])
+			if di != dj {
+				return !di
+			}
+			if entries[i].defs != entries[j].defs {
+				return entries[i].defs > entries[j].defs
+			}
+			if entries[i].count != entries[j].count {
+				return entries[i].count > entries[j].count
+			}
+			return entries[i].path < entries[j].path
+		})
+	} else if density {
 		// Matching lines per KB, with a flat demotion for generated and
 		// vendored artifacts — a 200-line file about the concept should
-		// outrank a 20k-line file that mentions it as often.
+		// outrank a 20k-line file that mentions it as often. The score
+		// is emitted with each row so the reader can see why the order
+		// changed.
 		score := func(e *outlineEntry) float64 {
 			kb := float64(e.size) / 1024.0
 			if kb < 1 {
@@ -314,6 +432,9 @@ func runOutline(paths []string, m matcher.Matcher, reader input.Reader, w *outpu
 			}
 			return entries[i].path < entries[j].path
 		})
+		for i := range entries {
+			scores[i] = score(&entries[i])
+		}
 	} else {
 		sort.Slice(entries, func(i, j int) bool {
 			if entries[i].count != entries[j].count {
@@ -335,11 +456,19 @@ func runOutline(paths []string, m matcher.Matcher, reader input.Reader, w *outpu
 
 	var buf []byte
 	if jsonOut {
-		for _, e := range shown {
+		for i, e := range shown {
 			buf = append(buf, `{"type":"outline","file":`...)
 			buf = appendJSONString(buf, e.path)
 			buf = append(buf, `,"count":`...)
 			buf = strconv.AppendInt(buf, int64(e.count), 10)
+			if density {
+				buf = append(buf, `,"score":`...)
+				buf = strconv.AppendFloat(buf, scores[i], 'f', 2, 64)
+			}
+			if defsRank {
+				buf = append(buf, `,"defs":`...)
+				buf = strconv.AppendInt(buf, int64(e.defs), 10)
+			}
 			buf = append(buf, `,"exemplar":`...)
 			buf = appendJSONString(buf, e.exemplar)
 			buf = append(buf, "}\n"...)
@@ -362,8 +491,18 @@ func runOutline(paths []string, m matcher.Matcher, reader input.Reader, w *outpu
 			buf = append(buf, " shown)"...)
 		}
 		buf = append(buf, '\n')
-		for _, e := range shown {
+		for i, e := range shown {
 			buf = strconv.AppendInt(buf, int64(e.count), 10)
+			if density {
+				buf = append(buf, " ("...)
+				buf = strconv.AppendFloat(buf, scores[i], 'f', 2, 64)
+				buf = append(buf, "/KB)"...)
+			}
+			if defsRank {
+				buf = append(buf, " ("...)
+				buf = strconv.AppendInt(buf, int64(e.defs), 10)
+				buf = append(buf, " defs)"...)
+			}
 			buf = append(buf, '\t')
 			buf = append(buf, e.path...)
 			buf = append(buf, '\t')
@@ -377,6 +516,23 @@ func runOutline(paths []string, m matcher.Matcher, reader input.Reader, w *outpu
 		return 0
 	}
 	return 1
+}
+
+// testPath reports whether a path looks like test or spec content,
+// which --rank defs sinks below hand-written sources.
+func testPath(path string) bool {
+	for seg := range strings.SplitSeq(path, "/") {
+		switch seg {
+		case "test", "tests", "spec", "specs", "__tests__":
+			return true
+		}
+	}
+	base := path
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		base = path[i+1:]
+	}
+	return strings.Contains(base, "_test.") || strings.Contains(base, ".test.") ||
+		strings.Contains(base, "_spec.") || strings.Contains(base, ".spec.")
 }
 
 // demotedPath reports whether a path points at vendored, generated, or
@@ -488,7 +644,10 @@ func runSuggest(patterns []string, paths []string, reader input.Reader, w *outpu
 
 	probes := make([]suggestProbe, 0, len(variants))
 	for _, v := range variants {
-		m, err := matcher.NewMatcher([]string{v.pattern}, true, false, true, false, matcher.MatcherOpts{})
+		// Word-bounded probes: a fragment like 'herd' must not count
+		// every 'shepherd', or rarest-first ordering is meaningless.
+		bounded := `\b` + regexp.QuoteMeta(v.pattern) + `\b`
+		m, err := matcher.NewMatcher([]string{bounded}, false, false, true, false, matcher.MatcherOpts{})
 		if err != nil {
 			continue
 		}
@@ -590,7 +749,7 @@ func appendSuggestReport(buf []byte, patterns []string, probes []suggestProbe, j
 func probeCount(paths []string, m matcher.Matcher, reader input.Reader, cfg Config) (lines, files int) {
 	var lineCount, fileCount atomic.Int64
 
-	fileCh, err := fileSource(cfg, paths)
+	fileCh, _, err := fileSource(cfg, paths)
 	if err != nil {
 		return 0, 0
 	}

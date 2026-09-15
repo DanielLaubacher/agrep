@@ -119,8 +119,9 @@ func TestTextFormatter_MaxColumns(t *testing.T) {
 	}
 
 	got := string(f.Format(nil, result, false))
-	// Match at [0,4], center=2, window starts at 0, shows first 20 chars
-	want := "1:short\n2:this is a very long \n"
+	// Match at [0,4], center=2, window starts at 0; the right edge
+	// snaps back to the word boundary (no mid-word cut, no trailing space)
+	want := "1:short\n2:this is a very long\n"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -143,8 +144,9 @@ func TestTextFormatter_MaxColumnsClipsPositions(t *testing.T) {
 	}
 
 	got := string(f.Format(nil, result, false))
-	// line[3:13] = "lo world a"
-	want := "lo world a\n"
+	// Window [3,13) with the right edge snapped to the word boundary
+	// after "world" — the trailing " a" fragment is dropped
+	want := "lo world\n"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

@@ -93,7 +93,7 @@ func runBatch(cfg Config, reader input.Reader, stdinReader input.Reader, formatt
 	}
 
 	// Files, recursive and --files-from modes share the scheduler path.
-	fileCh, err := fileSource(cfg, cfg.Paths)
+	fileCh, werrs, err := fileSource(cfg, cfg.Paths)
 	if err != nil {
 		logWarn("files-from: %v", err)
 		return 2
@@ -103,11 +103,19 @@ func runBatch(cfg Config, reader input.Reader, stdinReader input.Reader, formatt
 	resultCh := sched.RunBatch(fileCh, matchers, patterns)
 
 	var hasMatch atomic.Bool
+	walkFailed := false
 	ow := output.NewOrderedWriter(w, formatter, true)
-	ow.WriteOrdered(resultCh, func() {
+	ow.WriteOrderedTail(resultCh, func() {
 		hasMatch.Store(true)
+	}, func() []output.Result {
+		errs := werrs.errResults()
+		walkFailed = len(errs) > 0
+		return errs
 	})
 
+	if walkFailed {
+		return 2
+	}
 	if hasMatch.Load() {
 		return 0
 	}

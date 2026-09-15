@@ -3,12 +3,25 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/DanielLaubacher/agrep/internal/cli"
+	"github.com/DanielLaubacher/agrep/internal/matcher"
 )
+
+// usageText returns the help text, marking -P honestly when this build
+// excludes the PCRE engine (report bug 11).
+func usageText() string {
+	if matcher.PCREAvailable {
+		return usage
+	}
+	return strings.Replace(usage,
+		"Interpret pattern as PCRE2 regex",
+		"PCRE2 regex (NOT in this build: run make build-pcre)", 1)
+}
 
 const usage = `Usage: agrep [OPTIONS] PATTERN [FILE...]
 
@@ -22,12 +35,17 @@ Options:
   -o, --only-matching      Print only the matched part of the line
   -i, --ignore-case        Case-insensitive matching
   -S, --smart-case         Case-insensitive if pattern is all lowercase
+  -s, --case-sensitive     Force case-sensitive matching (overrides earlier
+                           -i/-S, including from the ~/.agrep config file)
   -v, --invert-match       Select non-matching lines
   -n, --line-number        Print line numbers
   -c, --count              Print only match count per file
   -l, --files-with-matches Print only filenames with matches
   -r, --recursive          Recursively search directories
       --json               Output results as JSON Lines
+      --compact            Lean JSON match records: file, line, region,
+                           text (no span/byte_offset/matches) — cheaper
+                           for reading many matches
   -B, --before-context NUM Print NUM lines before match
   -A, --after-context NUM  Print NUM lines after match
   -C, --context NUM        Print NUM lines before and after match
@@ -50,6 +68,7 @@ Options:
   -L, --follow             Follow symbolic links
       --watch              Watch files for changes and search new content
   -h, --help               Show this help
+  -V, --version            Show version information
 
 Agent options (see agent-mode.md):
       --ident              Match the pattern as an identifier: all case
@@ -59,8 +78,9 @@ Agent options (see agent-mode.md):
       --top K              Limit --outline/--histogram to the K busiest entries
       --histogram          Count distinct matched texts (uniq -c built in);
                            composes with -o pipelines
-      --rank MODE          --outline order: count (default) or density
-                           (matches/KB, demotes vendored/generated files)
+      --rank MODE          --outline order: count (default), density
+                           (matches/KB, demotes vendored/generated files),
+                           or defs (definition lines first; demotes tests)
       --collapse           Suppress repeats of identical match lines after 3
                            occurrences; reports exactly what was collapsed
       --sections           Annotate matches with their Markdown section heading
@@ -76,7 +96,9 @@ Agent options (see agent-mode.md):
       --suggest            On zero hits, probe derived variants and report
                            counts (always reports, even when nothing occurs)
       --get-region SPAN    Print exact bytes for a "path@start-end" span id,
-                           or whole lines for "path@:120-160" (1-based)
+                           whole lines for "path@:120-160" (1-based), a whole
+                           definition for "path@func:Name", or a whole
+                           Markdown section for "path@section:Name"
       --expand N           Widen --get-region by N whole lines each side
       --use-index          Build/use a trigram index for recursive search;
                            auto-refreshed by a stat sweep on every query
@@ -214,6 +236,11 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			cfg.IgnoreCase = true
 		case "-S", "--smart-case":
 			cfg.SmartCase = true
+		case "-s", "--case-sensitive":
+			// Later flags win, so a command-line -s overrides -i/-S
+			// injected by the config file (parsed first).
+			cfg.IgnoreCase = false
+			cfg.SmartCase = false
 		case "-v", "--invert-match":
 			cfg.Invert = true
 		case "-n", "--line-number":
@@ -224,6 +251,8 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			cfg.FileNamesOnly = true
 		case "-r", "--recursive":
 			cfg.Recursive = true
+		case "--compact":
+			cfg.Compact = true
 		case "--json":
 			cfg.JSONOutput = true
 		case "--no-ignore":
@@ -256,6 +285,9 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			showHelp = true
 		case "--skill":
 			fmt.Print(skillText)
+			os.Exit(0)
+		case "-V", "--version":
+			fmt.Println(versionString())
 			os.Exit(0)
 		case "-B", "--before-context":
 			v, ok := nextVal()
@@ -308,8 +340,8 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 			if !ok {
 				die("flag %s requires a value", key)
 			}
-			if v != "count" && v != "density" {
-				die("--rank must be count or density, got %q", v)
+			if v != "count" && v != "density" && v != "defs" {
+				die("--rank must be count, density, or defs, got %q", v)
 			}
 			cfg.Rank = v
 		case "--top":
@@ -387,9 +419,16 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 		default:
 			// Try to expand combined short flags like -rin, -Ftoe, -il
 			if len(key) > 2 && key[0] == '-' && key[1] != '-' {
-				// Expand: inject individual flags back
+				// Expand: inject individual flags back. A numeric-value
+				// short (-A -B -C -M) followed by digits is flag+value
+				// (-C1 → -C 1), grep-style.
 				expanded := make([]string, 0, len(key)-1)
-				for _, ch := range key[1:] {
+				chars := key[1:]
+				for j, ch := range chars {
+					if strings.ContainsRune("ABCM", ch) && j+1 < len(chars) && isNumeric(chars[j+1:]) {
+						expanded = append(expanded, "-"+string(ch), chars[j+1:])
+						break
+					}
 					expanded = append(expanded, "-"+string(ch))
 				}
 				// Replace current position with expanded flags
@@ -405,7 +444,7 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 	}
 
 	if showHelp {
-		fmt.Print(usage)
+		fmt.Print(usageText())
 		os.Exit(0)
 	}
 
@@ -416,7 +455,7 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 		cfg.Paths = positional
 	} else if !explicitE {
 		if len(positional) == 0 {
-			fmt.Print(usage)
+			fmt.Print(usageText())
 			os.Exit(0)
 		}
 		pattern := positional[0]
@@ -499,6 +538,56 @@ func isTerminal(fd int) bool {
 
 // splitFlag splits "--flag=value" into ("--flag", "value", true)
 // or returns ("--flag", "", false) if no = present.
+// versionString reports the build's version: the module version when
+// installed via `go install`, or the VCS revision for repo builds.
+func versionString() string {
+	v := "agrep dev"
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return v
+	}
+	if bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		v = "agrep " + bi.Main.Version
+	}
+	var rev, dirty string
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			if s.Value == "true" {
+				dirty = "-dirty"
+			}
+		}
+	}
+	if rev != "" {
+		if len(rev) > 12 {
+			rev = rev[:12]
+		}
+		v += " (" + rev + dirty + ")"
+	}
+	if !matcher.PCREAvailable {
+		v += " [no pcre]"
+	}
+	return v
+}
+
+// isNumeric reports whether s is an integer (optionally negative).
+func isNumeric(s string) bool {
+	if strings.HasPrefix(s, "-") {
+		s = s[1:]
+	}
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 func splitFlag(arg string) (string, string, bool) {
 	if before, after, ok := strings.Cut(arg, "="); ok {
 		return before, after, true

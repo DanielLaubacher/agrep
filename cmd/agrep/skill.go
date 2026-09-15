@@ -20,8 +20,11 @@ normal outcome, not a failure — pair it with --suggest.
 1. Survey — who talks about the concept:
      agrep --outline --top 10 -r 'backoff' CORPUS/
    One row per file: count, path, exemplar (the file's most informative
-   matching line). --rank density orders by matches/KB and demotes
-   vendored/generated files — better than raw counts in big trees.
+   matching line; definition lines win). --rank density orders by
+   matches/KB and demotes vendored/generated files; --rank defs puts
+   files with definition-shaped matches first and sinks tests — the
+   right mode for "where is X defined". Both emit their signal
+   (score / defs) in every row so the order is explicable.
 
 2. Expand — probe a concept as several lexical variants in one pass:
      printf 'retry\nbackoff\nexponential delay\n' > /tmp/probes
@@ -32,11 +35,15 @@ normal outcome, not a failure — pair it with --suggest.
 3. Narrow — read matches with context, under a budget:
      agrep -rn --scope --max-tokens 2000 'jittered backoff' CORPUS/
    --scope names the enclosing function/class (Markdown: the heading;
-   --sections is the Markdown-only variant). --max-tokens caps output;
-   the summary reports exactly what was omitted (totals are always
-   true — the search itself never truncates). Add --collapse to stop
-   generated/lock files repeating one line hundreds of times: repeats
-   past 3 are tallied, and shown + collapsed = true total.
+   --sections is the Markdown-only variant; both add "page" from
+   <!-- p.N --> markers in PDF-extracted text). --max-tokens is a hard
+   cap enforced per record — it cuts inside a file, overshooting by at
+   most one record — and the summary reports exactly what was omitted
+   (totals are always true: the search itself never truncates). Output
+   order is deterministic (sorted walk), so a re-run costs the same
+   tokens. Add --collapse to stop generated/lock files repeating one
+   line hundreds of times: repeats past 3 are tallied; the summary
+   "lines" stays the true total with "shown_lines" alongside.
 
 4. Zero hits — let the tool propose the next query:
      agrep -r --suggest 'ConnectTimeout' CORPUS/
@@ -53,6 +60,18 @@ normal outcome, not a failure — pair it with --suggest.
    Line form 'file@:120-160' (1-based, inclusive) speaks the dialect
    of compilers and stack traces; --expand N adds N whole lines of
    context around either form. Multiline (-U) spans cite the same way.
+   Named forms return the whole unit you would otherwise read by
+   guessed line range — usually the cheapest follow-up to a match:
+     agrep --get-region 'src/config.go@func:parseConfig'
+     agrep --get-region 'book.md@section:Gob'
+   func: finds the definition (word-bounded, per language family) and
+   prints its whole block; section: the Markdown section (name matched
+   case-insensitively). Ambiguity is reported on stderr with the other
+   candidates' line numbers.
+   "span" and "region" always cover the FULL line regardless of any
+   display truncation, so region bytes match the "text" field exactly.
+   A region past EOF (a stale or fabricated citation) fails with exit
+   2 — it never "verifies" as silently empty.
 
 ## Precision queries
 
@@ -82,6 +101,17 @@ normal outcome, not a failure — pair it with --suggest.
 - Cross-line shapes: -U lets the pattern match across lines; output
   and span cover the whole block; ^ $ anchor per line. Regex only.
 
+## Case and display
+
+- Case: -i forces case-insensitive (full Unicode folding); -S
+  smart-case (insensitive only when the pattern is all-lowercase);
+  -s forces case-sensitive and overrides earlier -i/-S — including
+  ones injected by a ~/.agrep or ~/.gogrep config file. If counts
+  differ from grep, check for -S in the config file.
+- -M N truncates DISPLAYED lines to N bytes (0 = 75-byte default,
+  -1 = never). Display-only: JSON "text", "span", "region", and all
+  totals are line-accurate at any -M.
+
 ## Scoping the corpus
 
 - --changed-since REF — only files changed since the git ref (plus
@@ -95,24 +125,30 @@ normal outcome, not a failure — pair it with --suggest.
 
 ## Repeated queries: --use-index
 
-Add --use-index to any recursive search over a tree you will query
-more than once:
+Skip it unless a cold scan takes seconds: on a warm cache agrep
+scans ~10GB/s, and the index build costs far more than it saves on
+small trees. It pays off only when the tree is BIG or on slow/cold
+storage, mostly static, and the queries are rare literals (common
+words prune nothing; regexes without a strong literal gain nothing).
      agrep --use-index -rn 'pattern' ROOT/
-First use builds a trigram index (roughly one cold scan, stored under
+First use builds a trigram index (stored under
 $XDG_CACHE_HOME/agrep/); later queries prune to candidate files.
 Freshness is automatic — every query stat-sweeps and incrementally
-reindexes, so results are always identical to a cold scan; never
-stale. Pays off from the second query; not for one-shot searches.
---clear-index PATH deletes index state under PATH.
+reindexes (results always identical to a cold scan) — but any change
+to the tree makes the next query pay a reindex, so never use it on a
+tree you are editing. --clear-index PATH deletes index state.
 
 ## JSON contract (--json)
 
 JSON-Lines, one object per line; "type" discriminates:
   match    {type,file,line_number,byte_offset,text,matches,
-            span,region,section?,scope?,captures?,truncated?,query?}
+            span,region,section?,scope?,page?,captures?,truncated?,
+            query?}
+  context  {type,file,line_number,byte_offset,text,span,region}
+           context lines around a match (-C/-A/-B)
   count    {type,file,count,query?}            with -c
   file     {type,file,query?}                  with -l
-  outline  {type,file,count,exemplar}
+  outline  {type,file,count,exemplar,score?}  score with --rank density
   variant  {type,text,count,files}             with --histogram
   suggest  {type,variant,kind,lines,files}     zero counts included
   suggest_summary  {type,patterns,tried,found} always ends --suggest
@@ -123,14 +159,19 @@ JSON-Lines, one object per line; "type" discriminates:
            {files,lines,shown} after --outline;
            {distinct,total,shown} after --histogram;
            adds queries:[{query,files,lines}] after --batch;
-           {shown_lines,shown_files,omitted_lines,omitted_files}
-           after --max-tokens
+           adds shown_lines after --collapse (lines stays the total);
+           {shown_lines,shown_files,omitted_lines,omitted_files,
+            queries?} after --max-tokens (true totals, never just
+            what was shown)
 Line numbers are always real (no flag needed). In -U mode "text" is
 the whole matched block and line_number is its first line.
+A walk error (missing root, unreadable dir) emits an error record,
+counts in "errors", and exits 2 — absence claims need errors == 0.
 
 ## Flag quick reference
 
 -r recurse  -n line numbers  -i ignore case  -l files only  -c counts
+-s case-sensitive  -S smart-case  -M N display truncation (-1 = off)
 -F fixed string  -e PAT (repeatable, OR)  -C N context  -v invert
 -U multiline  --ident  --scope  --histogram  --collapse
 -g GLOB ('!x' excludes)  --hidden  --no-ignore  --changed-since REF
@@ -155,7 +196,10 @@ next pattern; -o emits only the matched text. Example over a log line
   iterating --get-region --expand.
 - Iterating on a branch? --changed-since HEAD (or main) scopes every
   query to the diff surface.
-- Always pass --json when a program (you) consumes the output.
+- Always pass --json when a program (you) consumes the output; add
+  --compact when reading many matches — it keeps file, line, region,
+  text (everything needed to read and cite) and drops span/offsets/
+  positions, about a third cheaper per record.
 - Budget with --max-tokens instead of head/tail — the summary keeps
   totals exact so you never mistake truncation for absence. "errors"
   in the summary is corpus you could not see — treat nonzero as a
@@ -163,4 +207,6 @@ next pattern; -o emits only the matched text. Example over a log line
 - A --suggest run always reports what it tried; zero variants
   occurring is itself a finding — stop probing that vocabulary.
 - Cite only via region ids you have verified with --get-region.
+- -P (PCRE) is excluded from the default build; the stock engine is
+  RE2-class (no lookbehind). Use bin/agrep-pcre when you need it.
 `

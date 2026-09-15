@@ -288,12 +288,16 @@ func (f *TextFormatter) formatOnlyMatch(buf []byte, filePath string, ms *matcher
 	return buf
 }
 
-// truncateWindow computes a [start, end) byte window of maxCols bytes
-// centered on the first match position.
+// truncateWindow computes a [start, end) byte window of about maxCols
+// bytes centered on the first match position. Edges snap outward to
+// whitespace (within a small slack) so prose is not cut mid-word; the
+// match itself is never trimmed out.
 func truncateWindow(line []byte, positions [][2]int, maxCols int) (int, int) {
 	center := 0
+	matchStart, matchEnd := 0, 0
 	if len(positions) > 0 {
-		center = (positions[0][0] + positions[0][1]) / 2
+		matchStart, matchEnd = positions[0][0], positions[0][1]
+		center = (matchStart + matchEnd) / 2
 	}
 
 	start := max(center-maxCols/2, 0)
@@ -301,6 +305,30 @@ func truncateWindow(line []byte, positions [][2]int, maxCols int) (int, int) {
 	if end > len(line) {
 		end = len(line)
 		start = max(end-maxCols, 0)
+	}
+
+	// Snap to word boundaries: shrink each cut edge to the nearest
+	// space (up to wordSlack bytes) without cutting into the match.
+	wordSlack := min(16, maxCols/4)
+	if start > 0 {
+		limit := min(start+wordSlack, matchStart)
+		s := start
+		for s < limit && line[s-1] != ' ' {
+			s++
+		}
+		if s > 0 && s <= limit && line[s-1] == ' ' {
+			start = s
+		}
+	}
+	if end < len(line) {
+		limit := max(end-wordSlack, matchEnd)
+		e := end
+		for e > limit && line[e] != ' ' {
+			e--
+		}
+		if line[e] == ' ' {
+			end = e
+		}
 	}
 	return start, end
 }

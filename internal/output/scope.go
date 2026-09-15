@@ -105,6 +105,22 @@ func enclosingScopeAt(data []byte, lineStart int, path string) ([]byte, int, boo
 	}
 }
 
+// IsDefinitionLine reports whether line looks like a definition
+// (func/class/def/type... per the file's language family; a heading in
+// Markdown). Used by --rank defs: agents ask "where is X defined" far
+// more often than "where is X mentioned".
+func IsDefinitionLine(line []byte, path string) bool {
+	fam := lang.ByPath(path)
+	_, trimmed := indentAndTrim(line)
+	if len(trimmed) == 0 {
+		return false
+	}
+	if fam == lang.Markdown {
+		return trimmed[0] == '#'
+	}
+	return !isCommentLine(trimmed) && isDefLine(trimmed, fam)
+}
+
 // indentAndTrim returns the count of leading whitespace bytes and the
 // line with surrounding whitespace removed.
 func indentAndTrim(line []byte) (int, []byte) {

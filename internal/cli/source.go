@@ -7,43 +7,107 @@ package cli
 // works everywhere.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"github.com/DanielLaubacher/agrep/internal/output"
 	"github.com/DanielLaubacher/agrep/internal/walker"
 )
 
-// fileSource returns the channel of files to search. Walk errors are
-// logged to stderr in the background.
-func fileSource(cfg Config, paths []string) (<-chan walker.FileEntry, error) {
+// walkErrs collects traversal errors from the walk's error stream so
+// they can be surfaced after the results — in the JSON stream, the
+// summary's errors count, and the exit code. A missing root must never
+// read as a clean "no match" (report bug 8).
+type walkErrs struct {
+	mu   sync.Mutex
+	errs []error
+	done chan struct{} // closed once the error stream has drained
+}
+
+func newWalkErrs() *walkErrs {
+	return &walkErrs{done: make(chan struct{})}
+}
+
+// collect drains errCh in the background.
+func (we *walkErrs) collect(errCh <-chan error) {
+	go func() {
+		defer close(we.done)
+		for err := range errCh {
+			we.mu.Lock()
+			we.errs = append(we.errs, err)
+			we.mu.Unlock()
+		}
+	}()
+}
+
+// wait blocks until the error stream has drained and returns the errors.
+// Safe to call on a source with no walk (returns nil immediately).
+func (we *walkErrs) wait() []error {
+	if we == nil {
+		return nil
+	}
+	<-we.done
+	we.mu.Lock()
+	defer we.mu.Unlock()
+	return we.errs
+}
+
+// errResults converts collected walk errors into error Results for the
+// formatter (stderr printing happens at the write site).
+func (we *walkErrs) errResults() []output.Result {
+	var results []output.Result
+	for _, err := range we.wait() {
+		path := ""
+		var werr *walker.WalkError
+		if errors.As(err, &werr) {
+			path = werr.Path
+		}
+		results = append(results, output.Result{FilePath: path, Err: err})
+	}
+	return results
+}
+
+// logWalkErrs reports collected walk errors on stderr — for aggregate
+// modes (outline, histogram) whose summaries have no error field yet.
+func logWalkErrs(we *walkErrs) {
+	for _, err := range we.wait() {
+		logWarn("walk: %v", err)
+	}
+}
+
+// fileSource returns the channel of files to search, plus a collector
+// for walk errors (nil-safe; nil when the source cannot produce them).
+func fileSource(cfg Config, paths []string) (<-chan walker.FileEntry, *walkErrs, error) {
 	if cfg.ChangedSince != "" {
 		list, err := changedFiles(cfg.ChangedSince, paths, cfg.Globs)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		ch := make(chan walker.FileEntry, len(list))
 		for _, p := range list {
 			ch <- walker.FileEntry{Path: p}
 		}
 		close(ch)
-		return ch, nil
+		return ch, nil, nil
 	}
 
 	if cfg.FilesFrom != "" {
 		list, err := loadFileList(cfg.FilesFrom)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		ch := make(chan walker.FileEntry, len(list))
 		for _, p := range list {
 			ch <- walker.FileEntry{Path: p}
 		}
 		close(ch)
-		return ch, nil
+		return ch, nil, nil
 	}
 
 	if cfg.Recursive {
@@ -54,12 +118,9 @@ func fileSource(cfg Config, paths []string) (<-chan walker.FileEntry, error) {
 			FollowSymlinks: cfg.FollowSymlinks,
 			Globs:          cfg.Globs,
 		})
-		go func() {
-			for err := range errCh {
-				logWarn("walk: %v", err)
-			}
-		}()
-		return ch, nil
+		we := newWalkErrs()
+		we.collect(errCh)
+		return ch, we, nil
 	}
 
 	ch := make(chan walker.FileEntry, len(paths))
@@ -67,7 +128,7 @@ func fileSource(cfg Config, paths []string) (<-chan walker.FileEntry, error) {
 		ch <- walker.FileEntry{Path: p}
 	}
 	close(ch)
-	return ch, nil
+	return ch, nil, nil
 }
 
 // loadFileList reads one path per line ('-' = stdin); blank lines are
