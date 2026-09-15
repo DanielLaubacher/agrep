@@ -73,6 +73,26 @@ func TestStructuralAtomSkipping(t *testing.T) {
 	}
 }
 
+// A shebang squashed onto the same physical line as the rest of a script
+// (common in PDF-extracted text, which has no real newlines between
+// statements) must not be treated as a Python line comment that swallows
+// everything after it — that silently hides real code from --lang py
+// (report bug 2).
+func TestStructuralShebangNotSwallowedAsComment(t *testing.T) {
+	m := structural(t, "config.load_kube_config(:[args])", lang.Python)
+	data := []byte("#!/usr/bin/env python3 import sys try: pass except: config.load_kube_config() group = 1\n")
+	if !m.MatchExists(data) {
+		t.Error("match hidden behind a squashed shebang line")
+	}
+
+	// A real inline comment (not a shebang) must still swallow to end of
+	// line — that part of atom-awareness isn't affected by the fix.
+	m2 := structural(t, "foo(:[a])", lang.Python)
+	if m2.MatchExists([]byte("# see foo(bar) in the docs\n")) {
+		t.Error("ordinary comment should still hide the call inside it")
+	}
+}
+
 func TestStructuralHoleCannotEscapeRegion(t *testing.T) {
 	// foo(:[a]) must not match when foo( is closed before a second ')'.
 	m := structural(t, "foo(:[a]))", lang.Go)

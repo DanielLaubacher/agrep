@@ -65,9 +65,9 @@ type StringSpec struct {
 
 // Spec is the structural knowledge for one family.
 type Spec struct {
-	LineComments []string   // comment-to-end-of-line openers
-	BlockOpen    string     // block comment opener ("" = none)
-	BlockClose   string     // block comment closer
+	LineComments []string // comment-to-end-of-line openers
+	BlockOpen    string   // block comment opener ("" = none)
+	BlockClose   string   // block comment closer
 	Strings      []StringSpec
 }
 
@@ -156,6 +156,17 @@ func CloseDelim(c byte) bool { return c == ')' || c == ']' || c == '}' }
 func SkipAtom(spec *Spec, data []byte, i int) (int, bool) {
 	rest := data[i:]
 	for _, lc := range spec.LineComments {
+		if lc == "#" && hasPrefix(rest, "#!") {
+			// A shebang is a directive, not prose commentary. PDF-extracted
+			// text can flatten an entire script onto one physical "line"
+			// (no real newline until the true end of that line); treating
+			// "#!" there as an ordinary line comment swallows everything
+			// after it as an unmatchable atom (report bug 2). Don't treat
+			// it as a comment at all — its bytes fall through to plain
+			// (non-delimiter) content and structural matching resumes
+			// normally on whatever code follows.
+			continue
+		}
 		if hasPrefix(rest, lc) {
 			j := i + len(lc)
 			for j < len(data) && data[j] != '\n' {
