@@ -38,19 +38,41 @@ func New(workers int, m matcher.Matcher, r input.Reader, filesOnly bool, countOn
 	}
 }
 
+// seqEntry pairs a file with its walk-order sequence number. Sequence
+// numbers are assigned by a single tagger goroutine before workers
+// consume entries — claiming them inside the workers would race, making
+// output order (and therefore budgeted output) vary between runs.
+type seqEntry struct {
+	entry walker.FileEntry
+	seq   int
+}
+
+// tagEntries assigns walk-order sequence numbers to incoming files.
+func tagEntries(files <-chan walker.FileEntry, buffered int) <-chan seqEntry {
+	tagged := make(chan seqEntry, buffered)
+	go func() {
+		defer close(tagged)
+		seq := 0
+		for entry := range files {
+			seq++
+			tagged <- seqEntry{entry: entry, seq: seq}
+		}
+	}()
+	return tagged
+}
+
 // Run processes files from the file channel and returns results on the result channel.
 // Results include sequence numbers for ordered output.
 func (s *Scheduler) Run(files <-chan walker.FileEntry) <-chan output.Result {
 	resultCh := make(chan output.Result, s.workers*2)
-	var seq atomic.Int64
+	tagged := tagEntries(files, s.workers*2)
 
 	var wg sync.WaitGroup
 	for range s.workers {
 		wg.Go(func() {
-			for entry := range files {
-				seqNum := int(seq.Add(1))
-				result := s.processFile(entry)
-				result.SeqNum = seqNum
+			for te := range tagged {
+				result := s.processFile(te.entry)
+				result.SeqNum = te.seq
 				resultCh <- result
 			}
 		})
@@ -71,14 +93,14 @@ func (s *Scheduler) Run(files <-chan walker.FileEntry) <-chan output.Result {
 func (s *Scheduler) RunBatch(files <-chan walker.FileEntry, matchers []matcher.Matcher, queries []string) <-chan output.Result {
 	q := len(matchers)
 	resultCh := make(chan output.Result, s.workers*2)
-	var fileSeq atomic.Int64
+	tagged := tagEntries(files, s.workers*2)
 
 	var wg sync.WaitGroup
 	for range s.workers {
 		wg.Go(func() {
-			for entry := range files {
-				base := (int(fileSeq.Add(1)) - 1) * q
-				results := s.processFileBatch(entry, matchers, queries)
+			for te := range tagged {
+				base := (te.seq - 1) * q
+				results := s.processFileBatch(te.entry, matchers, queries)
 				for i := range results {
 					results[i].SeqNum = base + i + 1
 					resultCh <- results[i]

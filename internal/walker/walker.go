@@ -1,14 +1,16 @@
-// Package walker traverses directory trees with raw getdents64 and
-// parallel BFS, classifying entries via d_type (no per-file stat),
-// honoring .gitignore stacks and glob filters, and skipping binary files
-// by extension before they are ever opened.
+// Package walker traverses directory trees with raw getdents64,
+// classifying entries via d_type (no per-file stat), honoring .gitignore
+// stacks and glob filters, and skipping binary files by extension before
+// they are ever opened. Traversal is a single-producer sorted DFS:
+// entries are emitted in a deterministic order (name-sorted within each
+// directory) so repeated runs produce identical output — search workers
+// downstream provide the parallelism.
 package walker
 
 import (
 	"path/filepath"
-	"runtime"
+	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -54,6 +56,7 @@ type WalkOptions struct {
 // Walk traverses directories and sends discovered files on the returned channel.
 // It uses raw getdents64 for maximum Linux performance.
 // Respects .gitignore files and skips hidden files/directories by default.
+// Files are emitted in deterministic sorted-DFS order.
 // If recursive is false, only the given paths are used as literal file paths.
 func Walk(roots []string, opts WalkOptions) (<-chan FileEntry, <-chan error) {
 	fileCh := make(chan FileEntry, 256)
@@ -77,7 +80,7 @@ func Walk(roots []string, opts WalkOptions) (<-chan FileEntry, <-chan error) {
 			return
 		}
 
-		pw := &parallelWalker{
+		tw := &treeWalker{
 			fileCh:         fileCh,
 			errCh:          errCh,
 			hidden:         opts.Hidden,
@@ -85,40 +88,34 @@ func Walk(roots []string, opts WalkOptions) (<-chan FileEntry, <-chan error) {
 			followSymlinks: opts.FollowSymlinks,
 			includeBinary:  opts.IncludeBinary,
 			globs:          opts.Globs,
+			buf:            make([]byte, 32*1024),
 		}
-		pw.cond = sync.NewCond(&pw.mu)
 
-		// Seed work queue with root directories.
 		for _, root := range roots {
+			// A root that is a regular file is searched as-is —
+			// `agrep -r PAT file.txt dir/` must not fail on the file.
+			var stat unix.Stat_t
+			if err := unix.Stat(root, &stat); err != nil {
+				tw.errCh <- &WalkError{Path: root, Err: err}
+				continue
+			}
+			if stat.Mode&unix.S_IFMT == unix.S_IFREG {
+				fileCh <- FileEntry{Path: root}
+				continue
+			}
 			var layers []ignoreLayer
 			if !opts.NoIgnore {
 				layers = []ignoreLayer{loadIgnoreLayer(root)}
 			}
-			pw.enqueue(walkItem{path: root, ignores: layers})
+			tw.walkDir(root, layers)
 		}
-
-		// Launch parallel walker goroutines.
-		workers := runtime.NumCPU()
-		var wg sync.WaitGroup
-		for range workers {
-			wg.Go(func() {
-				pw.worker()
-			})
-		}
-		wg.Wait()
 	}()
 
 	return fileCh, errCh
 }
 
-// walkItem represents a directory to be traversed by a worker.
-type walkItem struct {
-	path    string
-	ignores []ignoreLayer // snapshot of parent's ignore layers (nil if --no-ignore)
-}
-
-// parallelWalker coordinates concurrent BFS directory traversal.
-type parallelWalker struct {
+// treeWalker holds traversal state for one Walk call.
+type treeWalker struct {
 	fileCh         chan<- FileEntry
 	errCh          chan<- error
 	hidden         bool
@@ -127,217 +124,116 @@ type parallelWalker struct {
 	includeBinary  bool
 	globs          []string
 
-	mu      sync.Mutex
-	queue   []walkItem
-	pending int        // dirs enqueued but not yet fully processed
-	cond    *sync.Cond // signaled when items are enqueued or work is done
-	done    bool
+	buf     []byte   // getdents buffer, reused across directories
+	scratch []Dirent // per-batch parse buffer, reused across directories
 }
 
-// enqueue adds a directory to the work queue.
-func (pw *parallelWalker) enqueue(item walkItem) {
-	pw.mu.Lock()
-	pw.queue = append(pw.queue, item)
-	pw.pending++
-	pw.mu.Unlock()
-	pw.cond.Signal()
-}
-
-// dequeue retrieves a work item, blocking if the queue is temporarily empty.
-// Returns false when all work is complete.
-func (pw *parallelWalker) dequeue() (walkItem, bool) {
-	pw.mu.Lock()
-	for len(pw.queue) == 0 && !pw.done {
-		pw.cond.Wait()
-	}
-	if pw.done && len(pw.queue) == 0 {
-		pw.mu.Unlock()
-		return walkItem{}, false
-	}
-	item := pw.queue[0]
-	pw.queue = pw.queue[1:]
-	pw.mu.Unlock()
-	return item, true
-}
-
-// finish marks a directory as fully processed.
-func (pw *parallelWalker) finish() {
-	pw.mu.Lock()
-	pw.pending--
-	if pw.pending == 0 && len(pw.queue) == 0 {
-		pw.done = true
-		pw.cond.Broadcast()
-	}
-	pw.mu.Unlock()
-}
-
-// worker processes directories from the work queue until all work is done.
-func (pw *parallelWalker) worker() {
-	buf := make([]byte, 32*1024) // per-worker getdents buffer
-	var dirents []Dirent         // per-worker reusable dirent slice
-	for {
-		item, ok := pw.dequeue()
-		if !ok {
-			return
-		}
-		dirents = pw.processDir(item, buf, dirents)
-		pw.finish()
-	}
-}
-
-// processDir opens a single directory, reads all entries, and dispatches files/subdirs.
-// The directory fd is closed before returning — not held during subtree traversal.
-// Returns the dirents slice for reuse by the next call.
-func (pw *parallelWalker) processDir(item walkItem, buf []byte, dirents []Dirent) []Dirent {
-	fd, err := openDir(item.path)
+// walkDir reads one directory, sorts its entries by name, and processes
+// them in order — emitting files and recursing into subdirectories at
+// their sorted position. The deterministic order is a correctness
+// contract: output sequence numbers downstream derive from emission
+// order, so budgeted or truncated output must not vary between runs.
+// The directory fd is closed before recursing.
+func (tw *treeWalker) walkDir(path string, ignores []ignoreLayer) {
+	fd, err := openDir(path)
 	if err != nil {
-		pw.errCh <- &WalkError{Path: item.path, Err: err}
-		return dirents
+		tw.errCh <- &WalkError{Path: path, Err: err}
+		return
 	}
 
-	// Collect subdirectories to enqueue after closing the fd.
-	var subdirs []walkItem
-
+	var entries []Dirent
 	for {
-		n, err := unix.Getdents(fd, buf)
+		n, err := unix.Getdents(fd, tw.buf)
 		if err != nil {
-			pw.errCh <- &WalkError{Path: item.path, Err: err}
+			tw.errCh <- &WalkError{Path: path, Err: err}
 			break
 		}
 		if n == 0 {
 			break
 		}
-
-		dirents = ParseDirents(buf, n, dirents)
-		for _, entry := range dirents {
-			fullPath := joinPath(item.path, entry.Name)
-
-			switch entry.Type {
-			case DT_DIR:
-				if skipDir(entry.Name, pw.hidden) {
-					continue
-				}
-				if item.ignores != nil && isIgnoredByLayers(item.ignores, fullPath, true) {
-					continue
-				}
-				if pw.isGlobExcluded(entry.Name) {
-					continue
-				}
-				// Build child ignore layers: clone parent + load this dir's .gitignore
-				var childIgnores []ignoreLayer
-				if !pw.noIgnore {
-					childIgnores = make([]ignoreLayer, len(item.ignores)+1)
-					copy(childIgnores, item.ignores)
-					childIgnores[len(item.ignores)] = loadIgnoreLayer(fullPath)
-				}
-				subdirs = append(subdirs, walkItem{path: fullPath, ignores: childIgnores})
-
-			case DT_REG:
-				if !pw.hidden && len(entry.Name) > 0 && entry.Name[0] == '.' {
-					continue
-				}
-				if !pw.includeBinary && IsBinaryExtension(entry.Name) {
-					continue
-				}
-				if item.ignores != nil && isIgnoredByLayers(item.ignores, fullPath, false) {
-					continue
-				}
-				if pw.isGlobExcluded(entry.Name) {
-					continue
-				}
-				pw.fileCh <- FileEntry{Path: fullPath}
-
-			case DT_LNK:
-				if !pw.followSymlinks {
-					continue
-				}
-				var stat unix.Stat_t
-				if err := unix.Stat(fullPath, &stat); err != nil {
-					continue // silently skip broken symlinks
-				}
-				if stat.Mode&unix.S_IFMT == unix.S_IFREG {
-					if !pw.hidden && len(entry.Name) > 0 && entry.Name[0] == '.' {
-						continue
-					}
-					if !pw.includeBinary && IsBinaryExtension(entry.Name) {
-						continue
-					}
-					if item.ignores != nil && isIgnoredByLayers(item.ignores, fullPath, false) {
-						continue
-					}
-					if pw.isGlobExcluded(entry.Name) {
-						continue
-					}
-					pw.fileCh <- FileEntry{Path: fullPath}
-				} else if stat.Mode&unix.S_IFMT == unix.S_IFDIR {
-					if skipDir(entry.Name, pw.hidden) {
-						continue
-					}
-					if item.ignores != nil && isIgnoredByLayers(item.ignores, fullPath, true) {
-						continue
-					}
-					if pw.isGlobExcluded(entry.Name) {
-						continue
-					}
-					var childIgnores []ignoreLayer
-					if !pw.noIgnore {
-						childIgnores = make([]ignoreLayer, len(item.ignores)+1)
-						copy(childIgnores, item.ignores)
-						childIgnores[len(item.ignores)] = loadIgnoreLayer(fullPath)
-					}
-					subdirs = append(subdirs, walkItem{path: fullPath, ignores: childIgnores})
-				}
-
-			case DT_UNKNOWN:
-				var stat unix.Stat_t
-				if err := unix.Stat(fullPath, &stat); err != nil {
-					pw.errCh <- &WalkError{Path: fullPath, Err: err}
-					continue
-				}
-				mode := stat.Mode & unix.S_IFMT
-				if mode == unix.S_IFREG {
-					if !pw.hidden && len(entry.Name) > 0 && entry.Name[0] == '.' {
-						continue
-					}
-					if !pw.includeBinary && IsBinaryExtension(entry.Name) {
-						continue
-					}
-					if item.ignores != nil && isIgnoredByLayers(item.ignores, fullPath, false) {
-						continue
-					}
-					if pw.isGlobExcluded(entry.Name) {
-						continue
-					}
-					pw.fileCh <- FileEntry{Path: fullPath}
-				} else if mode == unix.S_IFDIR {
-					if skipDir(entry.Name, pw.hidden) {
-						continue
-					}
-					if item.ignores != nil && isIgnoredByLayers(item.ignores, fullPath, true) {
-						continue
-					}
-					if pw.isGlobExcluded(entry.Name) {
-						continue
-					}
-					var childIgnores []ignoreLayer
-					if !pw.noIgnore {
-						childIgnores = make([]ignoreLayer, len(item.ignores)+1)
-						copy(childIgnores, item.ignores)
-						childIgnores[len(item.ignores)] = loadIgnoreLayer(fullPath)
-					}
-					subdirs = append(subdirs, walkItem{path: fullPath, ignores: childIgnores})
-				}
-			}
-		}
+		tw.scratch = ParseDirents(tw.buf, n, tw.scratch)
+		entries = append(entries, tw.scratch...)
 	}
-
 	unix.Close(fd)
 
-	// Enqueue discovered subdirectories after closing fd.
-	for _, sub := range subdirs {
-		pw.enqueue(sub)
+	slices.SortFunc(entries, func(a, b Dirent) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+
+	for _, entry := range entries {
+		fullPath := joinPath(path, entry.Name)
+
+		// Resolve DT_LNK / DT_UNKNOWN to a concrete kind via stat.
+		kind := entry.Type
+		switch kind {
+		case DT_LNK:
+			if !tw.followSymlinks {
+				continue
+			}
+			var stat unix.Stat_t
+			if err := unix.Stat(fullPath, &stat); err != nil {
+				continue // silently skip broken symlinks
+			}
+			switch stat.Mode & unix.S_IFMT {
+			case unix.S_IFREG:
+				kind = DT_REG
+			case unix.S_IFDIR:
+				kind = DT_DIR
+			default:
+				continue
+			}
+		case DT_UNKNOWN:
+			var stat unix.Stat_t
+			if err := unix.Stat(fullPath, &stat); err != nil {
+				tw.errCh <- &WalkError{Path: fullPath, Err: err}
+				continue
+			}
+			switch stat.Mode & unix.S_IFMT {
+			case unix.S_IFREG:
+				kind = DT_REG
+			case unix.S_IFDIR:
+				kind = DT_DIR
+			default:
+				continue
+			}
+		}
+
+		switch kind {
+		case DT_DIR:
+			if skipDir(entry.Name, tw.hidden) {
+				continue
+			}
+			if ignores != nil && isIgnoredByLayers(ignores, fullPath, true) {
+				continue
+			}
+			if tw.isGlobExcluded(entry.Name) {
+				continue
+			}
+			// Child ignore layers: parent stack + this dir's .gitignore.
+			var childIgnores []ignoreLayer
+			if !tw.noIgnore {
+				childIgnores = make([]ignoreLayer, len(ignores)+1)
+				copy(childIgnores, ignores)
+				childIgnores[len(ignores)] = loadIgnoreLayer(fullPath)
+			}
+			tw.walkDir(fullPath, childIgnores)
+
+		case DT_REG:
+			if !tw.hidden && len(entry.Name) > 0 && entry.Name[0] == '.' {
+				continue
+			}
+			if !tw.includeBinary && IsBinaryExtension(entry.Name) {
+				continue
+			}
+			if ignores != nil && isIgnoredByLayers(ignores, fullPath, false) {
+				continue
+			}
+			if tw.isGlobExcluded(entry.Name) {
+				continue
+			}
+			tw.fileCh <- FileEntry{Path: fullPath}
+		}
 	}
-	return dirents
 }
 
 // joinPath concatenates a directory and entry name with a single separator.
@@ -380,14 +276,14 @@ func skipDir(name string, hidden bool) bool {
 // If only exclusion patterns exist, a file is excluded if it matches any exclusion.
 // If any inclusion patterns exist, a file must match at least one inclusion AND not
 // match any exclusion.
-func (pw *parallelWalker) isGlobExcluded(name string) bool {
-	if len(pw.globs) == 0 {
+func (tw *treeWalker) isGlobExcluded(name string) bool {
+	if len(tw.globs) == 0 {
 		return false
 	}
 
 	hasIncludes := false
 	included := false
-	for _, g := range pw.globs {
+	for _, g := range tw.globs {
 		if strings.HasPrefix(g, "!") {
 			// Exclusion glob
 			pattern := g[1:]
@@ -453,6 +349,6 @@ func (e *WalkError) Unwrap() error {
 // base name, with the same semantics the walker uses during traversal.
 // Exported for file sources that bypass the walk (--changed-since).
 func MatchesGlobs(globs []string, name string) bool {
-	pw := &parallelWalker{globs: globs}
-	return !pw.isGlobExcluded(name)
+	tw := &treeWalker{globs: globs}
+	return !tw.isGlobExcluded(name)
 }
