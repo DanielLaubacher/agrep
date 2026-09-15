@@ -176,3 +176,94 @@ func TestStructuralLeftWordBoundary(t *testing.T) {
 		t.Errorf("NewClient( matched %d times, want 1 (TestNewClient excluded)", got)
 	}
 }
+
+// TestStructuralRustNestedComment: a Rust doc/nested block comment must
+// hide its whole contents, including a fake call site inside it (report
+// bug: the first inner "*/" used to end the comment early, exposing the
+// "leftover" text as if it were real code).
+func TestStructuralRustNestedComment(t *testing.T) {
+	m := structural(t, "leftover(:[x])", lang.Rust)
+	data := []byte("/* /* */ leftover(fake_call_site) */\nfn real() {\n    leftover(actual_call)\n}\n")
+	ms := m.FindAll(data)
+	if len(ms.Matches) != 1 {
+		t.Fatalf("matches = %d, want 1 (only the real call, not the commented-out one)", len(ms.Matches))
+	}
+	if got := capText(&ms, 0, "x"); got != "actual_call" {
+		t.Errorf("capture = %q, want %q", got, "actual_call")
+	}
+}
+
+// TestStructuralJSRegexLiteral: an unbalanced brace inside a JS regex
+// literal (e.g. /\{/ ) must not corrupt the hole's delimiter-depth
+// counter (report bug: the hole never closed, so the whole template
+// failed to match).
+func TestStructuralJSRegexLiteral(t *testing.T) {
+	m := structural(t, "target() { :[body] }", lang.JS)
+	data := []byte("function target() {\n    const re = /\\{/;\n    return 1;\n}\nfunction after() {\n    return 2;\n}\n")
+	ms := m.FindAll(data)
+	if len(ms.Matches) != 1 {
+		t.Fatalf("matches = %d, want 1", len(ms.Matches))
+	}
+	got := capText(&ms, 0, "body")
+	if !strings.Contains(got, "return 1") || strings.Contains(got, "after") {
+		t.Errorf("body = %q, want target()'s own body only", got)
+	}
+}
+
+// TestStructuralHeredocBody: an unbalanced brace inside a shell/Ruby
+// heredoc body must not corrupt delimiter-depth tracking for the
+// enclosing function/method (report bug: heredoc bodies weren't atoms
+// at all).
+func TestStructuralHeredocBody(t *testing.T) {
+	t.Run("shell", func(t *testing.T) {
+		m := structural(t, "target() { :[body] }", lang.Shell)
+		data := []byte("target() {\n    cat <<EOF2\nunbalanced brace {\nEOF2\n    echo real\n}\nafter() {\n    echo two\n}\n")
+		ms := m.FindAll(data)
+		if len(ms.Matches) != 1 {
+			t.Fatalf("matches = %d, want 1", len(ms.Matches))
+		}
+		if got := capText(&ms, 0, "body"); !strings.Contains(got, "echo real") {
+			t.Errorf("body = %q, want it to contain %q", got, "echo real")
+		}
+	})
+	t.Run("ruby", func(t *testing.T) {
+		m := structural(t, "def target :[body] end", lang.Ruby)
+		data := []byte("def target\n  sql = <<~SQL\n    unbalanced brace {\n  SQL\n  1\nend\n\ndef after\n  2\nend\n")
+		ms := m.FindAll(data)
+		if len(ms.Matches) != 1 {
+			t.Fatalf("matches = %d, want 1", len(ms.Matches))
+		}
+		if got := capText(&ms, 0, "body"); !strings.Contains(got, "1") || strings.Contains(got, "def after") {
+			t.Errorf("body = %q, want target's own body only", got)
+		}
+	})
+}
+
+// TestStructuralStringInterpolation: a nested quote/backtick inside a
+// Ruby "#{}"/JS "${}" interpolation must not end the outer string early
+// (report bug: the outer string closed at the first quote/backtick
+// found inside the interpolation, corrupting depth tracking).
+func TestStructuralStringInterpolation(t *testing.T) {
+	t.Run("ruby", func(t *testing.T) {
+		m := structural(t, "def target :[body] end", lang.Ruby)
+		data := []byte("def target\n  puts \"value is #{h[\"key\"]}\"\n  1\nend\n")
+		ms := m.FindAll(data)
+		if len(ms.Matches) != 1 {
+			t.Fatalf("matches = %d, want 1", len(ms.Matches))
+		}
+		if got := capText(&ms, 0, "body"); !strings.Contains(got, "1") {
+			t.Errorf("body = %q", got)
+		}
+	})
+	t.Run("js nested backtick", func(t *testing.T) {
+		m := structural(t, "target() { :[body] }", lang.JS)
+		data := []byte("function target() {\n    const s = `outer ${`inner`} end`;\n    return 1;\n}\n")
+		ms := m.FindAll(data)
+		if len(ms.Matches) != 1 {
+			t.Fatalf("matches = %d, want 1", len(ms.Matches))
+		}
+		if got := capText(&ms, 0, "body"); !strings.Contains(got, "return 1") {
+			t.Errorf("body = %q", got)
+		}
+	})
+}
