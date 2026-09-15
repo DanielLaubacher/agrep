@@ -529,7 +529,7 @@ func TestAssertionPrefilterMatchesStdlib(t *testing.T) {
 			t.Errorf("%q: expected a literal prefilter", pat)
 		}
 		got := re.FindAllIndex(data, -1)
-		want := toLocs(regexp.MustCompile(`(?m)` + pat).FindAllIndex(data, -1))
+		want := toLocs(regexp.MustCompile(`(?m)`+pat).FindAllIndex(data, -1))
 		if !equalLocs(got, want) {
 			t.Errorf("%q: got %v, want %v", pat, got, want)
 		}
@@ -553,12 +553,12 @@ func TestCompileModeMultiline(t *testing.T) {
 		want [][2]int
 	}{
 		{`foo\(\n\s*bar`, [][2]int{{2, 12}}},               // prefix literal: anchored verify across lines
-		{`(?i)foo\(\n\s*bar`, [][2]int{{2, 12}, {18, 26}}},  // case-insensitive anchored
-		{`\s*foo\(\n\s*bar`, [][2]int{{1, 12}}},             // non-prefix literal: gate only
+		{`(?i)foo\(\n\s*bar`, [][2]int{{2, 12}, {18, 26}}}, // case-insensitive anchored
+		{`\s*foo\(\n\s*bar`, [][2]int{{1, 12}}},            // non-prefix literal: gate only
 		{`(?i)\s*foo\(\n\s*bar`, [][2]int{{1, 12}, {15, 26}}},
-		{`^foo\($\n^\s*bar`, [][2]int{{2, 12}}},             // assertions: PikeVM, gated
-		{`(?i)\s*foo\(\n\s*zzz`, nil},                       // gate literal present, no match
-		{`(?i)qqq\(\n\s*bar`, nil},                          // gate literal absent
+		{`^foo\($\n^\s*bar`, [][2]int{{2, 12}}}, // assertions: PikeVM, gated
+		{`(?i)\s*foo\(\n\s*zzz`, nil},           // gate literal present, no match
+		{`(?i)qqq\(\n\s*bar`, nil},              // gate literal absent
 	}
 	for _, c := range cases {
 		re, err := CompileMode(c.pat, ModeMultiline)
@@ -569,12 +569,55 @@ func TestCompileModeMultiline(t *testing.T) {
 		if !equalLocs(got, c.want) {
 			t.Errorf("ModeMultiline %q: got %v, want %v", c.pat, got, c.want)
 		}
-		want := toLocs(regexp.MustCompile(`(?m)` + c.pat).FindAllIndex(data, -1))
+		want := toLocs(regexp.MustCompile(`(?m)`+c.pat).FindAllIndex(data, -1))
 		if !equalLocs(got, want) {
 			t.Errorf("ModeMultiline %q: disagrees with stdlib %v", c.pat, want)
 		}
 		if re.Match(data) != (len(c.want) > 0) {
 			t.Errorf("ModeMultiline %q: Match = %v", c.pat, re.Match(data))
+		}
+	}
+}
+
+// TestMinMatchLenShortCircuit: a pattern with a known minimum match
+// length must reject any shorter buffer without a false negative on
+// buffers exactly at (or one over) that length — the length bound must
+// never overestimate.
+func TestMinMatchLenShortCircuit(t *testing.T) {
+	cases := []struct {
+		pattern string
+		minLen  int
+	}{
+		{`\d{4}-\d{2}-\d{2}`, 10},
+		{`hello`, 5},
+		{`a{3,}`, 3},
+		{`ab*c`, 2}, // b* may match zero times
+		{`a|bb`, 1}, // shortest alternative wins
+		{`^$`, 0},
+		{`a*`, 0},
+		{`(foo)(bar)`, 6},
+		{`caf\x{e9}`, 5}, // literal with a multi-byte rune (utf8.RuneLen(é)=2)
+	}
+	for _, c := range cases {
+		re, err := Compile(c.pattern)
+		if err != nil {
+			t.Fatalf("%q: %v", c.pattern, err)
+		}
+		if re.minLen != c.minLen {
+			t.Errorf("%q: minLen = %d, want %d", c.pattern, re.minLen, c.minLen)
+		}
+	}
+
+	// The bound must never cause a false negative: exercise it against
+	// stdlib on inputs sized right at the boundary.
+	re, err := Compile(`\d{4}-\d{2}-\d{2}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	std := regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
+	for _, s := range []string{"", "123456789", "2024-01-01", "x2024-01-01x", "2024-01-0"} {
+		if got, want := re.MatchString(s), std.MatchString(s); got != want {
+			t.Errorf("MatchString(%q) = %v, want %v (stdlib)", s, got, want)
 		}
 	}
 }

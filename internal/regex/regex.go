@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"regexp/syntax"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/DanielLaubacher/agrep/internal/simd"
 )
@@ -52,12 +53,24 @@ type Regexp struct {
 	// allowedBytes is the set of bytes any match can contain (union of all
 	// NFA consuming transitions). Used to bound rare-byte verify windows.
 	allowedBytes [256]bool
+
+	// minLen is a safe lower bound on any match's byte length: a buffer
+	// shorter than this can be rejected without running the engine at
+	// all (Friedl's "length-cognizant" optimization). 0 when a
+	// zero-width match is possible.
+	minLen int
+}
+
+// tooShort reports whether b is too short to hold any match, without
+// running the engine.
+func (re *Regexp) tooShort(b []byte) bool {
+	return len(b) < re.minLen
 }
 
 type engineType uint8
 
 const (
-	engineDFA     engineType = iota
+	engineDFA engineType = iota
 	enginePikeVM
 	engineLiteral
 )
@@ -123,6 +136,7 @@ func compilePattern(pattern string, baseFlags syntax.Flags, mode Mode) (*Regexp,
 		vm:      vm,
 		flags:   flags,
 		mode:    mode,
+		minLen:  minMatchLen(re),
 	}
 	rx.allowedBytes = computeAllowedBytes(nfa)
 
@@ -331,6 +345,56 @@ func wordLiteral(re *syntax.Regexp) (lit []byte, ci, start, end, ok bool) {
 	return []byte(str), ci, start, end, true
 }
 
+// minMatchLen returns a safe lower bound on the number of bytes any
+// match of re can consume — never an overestimate, so uncertain or
+// zero-width constructs resolve to 0. Used once at compile time so a
+// buffer/line shorter than the bound can be rejected without running
+// the engine at all (Friedl's "Mastering Regular Expressions" ch.6
+// describes this as a distinct, cheap optimization from literal
+// prefiltering).
+func minMatchLen(re *syntax.Regexp) int {
+	switch re.Op {
+	case syntax.OpLiteral:
+		n := 0
+		for _, r := range re.Rune {
+			n += utf8.RuneLen(r)
+		}
+		return n
+	case syntax.OpCharClass, syntax.OpAnyChar, syntax.OpAnyCharNotNL:
+		return 1
+	case syntax.OpCapture, syntax.OpPlus:
+		return minMatchLen(re.Sub[0])
+	case syntax.OpRepeat:
+		if re.Min <= 0 {
+			return 0
+		}
+		return minMatchLen(re.Sub[0]) * re.Min
+	case syntax.OpConcat:
+		n := 0
+		for _, sub := range re.Sub {
+			n += minMatchLen(sub)
+		}
+		return n
+	case syntax.OpAlternate:
+		if len(re.Sub) == 0 {
+			return 0
+		}
+		min := minMatchLen(re.Sub[0])
+		for _, sub := range re.Sub[1:] {
+			if m := minMatchLen(sub); m < min {
+				min = m
+			}
+		}
+		return min
+	default:
+		// OpEmptyMatch, OpStar, OpQuest (zero repetitions allowed),
+		// OpBeginLine/OpEndLine/OpBeginText/OpEndText/OpWordBoundary/
+		// OpNoWordBoundary (zero-width assertions), and OpNoMatch (never
+		// matches — 0 is still a safe, if moot, lower bound).
+		return 0
+	}
+}
+
 // hasTextAnchors reports whether the pattern uses \A or \z (or ^ $ in
 // one-line mode), which refer to the whole text rather than a line.
 func hasTextAnchors(re *syntax.Regexp) bool {
@@ -355,7 +419,7 @@ func (re *Regexp) CanMatchNewline() bool {
 
 // Match reports whether the byte slice b contains any match of the regexp.
 func (re *Regexp) Match(b []byte) bool {
-	if re.gated(b) {
+	if re.tooShort(b) || re.gated(b) {
 		return false
 	}
 	if re.prefilter != nil && len(b) > 0 {
@@ -391,7 +455,7 @@ func (re *Regexp) Find(b []byte) []byte {
 
 // FindIndex returns the leftmost match location [start, end], or [-1, -1].
 func (re *Regexp) FindIndex(b []byte) [2]int {
-	if re.gated(b) {
+	if re.tooShort(b) || re.gated(b) {
 		return [2]int{-1, -1}
 	}
 	if re.prefilter != nil && len(b) > 0 {
@@ -423,7 +487,7 @@ func (re *Regexp) FindAll(b []byte, n int) [][]byte {
 
 // FindAllIndex returns all non-overlapping match locations.
 func (re *Regexp) FindAllIndex(b []byte, n int) [][2]int {
-	if n == 0 || re.gated(b) {
+	if n == 0 || re.tooShort(b) || re.gated(b) {
 		return nil
 	}
 
@@ -447,7 +511,7 @@ func (re *Regexp) FindAllIndex(b []byte, n int) [][2]int {
 // the surrounding bytes are still cache-hot from the scan — on buffers larger
 // than L3 this avoids a second cold pass over the data.
 func (re *Regexp) FindAllIndexFunc(b []byte, yield func(start, end int) bool) {
-	if re.gated(b) {
+	if re.tooShort(b) || re.gated(b) {
 		return
 	}
 	if re.prefilter != nil && len(b) > 0 {
