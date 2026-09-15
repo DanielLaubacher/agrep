@@ -377,12 +377,14 @@ func runStdin(reader input.Reader, m matcher.Matcher, formatter output.Formatter
 func runFiles(paths []string, m matcher.Matcher, reader input.Reader, formatter output.Formatter, w *output.Writer, mode searchMode, lineNums bool) int {
 	multiFile := len(paths) > 1
 	hasMatch := false
+	hasErr := false
 	var buf []byte
 
 	for _, path := range paths {
 		result := searchReader(reader, path, m, mode, lineNums)
 		if result.Err != nil {
 			logWarn("%s: %v", path, result.Err)
+			hasErr = true
 			// Fall through: JSON mode also records the error in-stream.
 		}
 		if result.HasMatch() {
@@ -404,6 +406,13 @@ func runFiles(paths []string, m matcher.Matcher, reader input.Reader, formatter 
 		w.Write(buf)
 	}
 
+	// A file that failed to open is an error exit even when other files
+	// matched, matching grep's convention and runRecursive's walkFailed
+	// handling (report bug: this used to return 0/1 from hasMatch alone,
+	// silently masking open errors on explicit file arguments).
+	if hasErr {
+		return 2
+	}
 	if hasMatch {
 		return 0
 	}
