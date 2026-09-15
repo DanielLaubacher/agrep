@@ -168,7 +168,8 @@ var cControlWords = []string{"if", "for", "while", "switch", "return", "else", "
 func isDefLine(trimmed []byte, fam lang.Lang) bool {
 	switch fam {
 	case lang.Go:
-		return hasPrefixWord(trimmed, "func") || hasPrefixWord(trimmed, "type")
+		return hasPrefixWord(trimmed, "func") || hasPrefixWord(trimmed, "type") ||
+			hasPrefixWord(trimmed, "const") || hasPrefixWord(trimmed, "var")
 	case lang.Python:
 		return hasPrefixWord(trimmed, "def") || hasPrefixWord(trimmed, "class") ||
 			(hasPrefixWord(trimmed, "async") && hasPrefixWord(bytes.TrimLeft(trimmed[5:], " \t"), "def"))

@@ -26,7 +26,7 @@ func Bar() {}
 	}{
 		{"return work(a)", "func Foo(a int) error"},
 		{"if a > 0 {", "func Foo(a int) error"},
-		{"var topLevel = 3", ""}, // top-level: no enclosing definition
+		{"var topLevel = 3", "var topLevel = 3"}, // a var decl is its own scope, like func/type
 		{"func Bar() {}", "func Bar() {}"},
 		{"// doc comment for Foo", ""}, // comment at col 0 above the func
 	}
@@ -78,6 +78,29 @@ func TestEnclosingScopeMarkdownFallback(t *testing.T) {
 	got := string(enclosingScope(data, pos, "book.md"))
 	if got != "## Backoff" {
 		t.Errorf("markdown scope = %q, want ## Backoff", got)
+	}
+}
+
+// Go const/var declarations must count as definitions like func/type —
+// otherwise --rank defs and kind:"definition" miss real top-level
+// constants and variables entirely (report bug 4).
+func TestIsDefinitionLineGoConstVar(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"const blockMaxBytes = 32 * 1024", true},
+		{"var pageMarker = []byte(\"<!-- p.\")", true},
+		{"const (", true},
+		{"func Foo() {}", true},
+		{"type Foo struct{}", true},
+		{"x := const1 + 1", false}, // "const1" is not the keyword "const"
+		{"return count", false},
+	}
+	for _, tc := range cases {
+		if got := IsDefinitionLine([]byte(tc.line), "x.go"); got != tc.want {
+			t.Errorf("IsDefinitionLine(%q) = %v, want %v", tc.line, got, tc.want)
+		}
 	}
 }
 
