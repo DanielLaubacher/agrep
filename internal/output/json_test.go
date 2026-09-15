@@ -77,7 +77,10 @@ func TestJSONFormatter_MultipleMatches(t *testing.T) {
 	}
 }
 
-func TestJSONFormatter_ContextLinesSkipped(t *testing.T) {
+// Context lines are emitted as {"type":"context"} records so JSON mode
+// has parity with plain mode (report bug 10). They are not counted as
+// matched lines.
+func TestJSONFormatter_ContextRecords(t *testing.T) {
 	f := NewJSONFormatter()
 	data := []byte("context\nmatch\ncontext\n")
 	result := Result{
@@ -95,8 +98,17 @@ func TestJSONFormatter_ContextLinesSkipped(t *testing.T) {
 
 	got := string(f.Format(nil, result, false))
 	lines := strings.Split(strings.TrimSpace(got), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("got %d lines, want 1 (context should be skipped)", len(lines))
+	if len(lines) != 3 {
+		t.Fatalf("got %d records, want 3 (context+match+context):\n%s", len(lines), got)
+	}
+	if !strings.Contains(lines[0], `"type":"context"`) || !strings.Contains(lines[2], `"type":"context"`) {
+		t.Errorf("context records missing:\n%s", got)
+	}
+	if !strings.Contains(lines[1], `"type":"match"`) {
+		t.Errorf("match record missing:\n%s", got)
+	}
+	if f.lines != 1 {
+		t.Errorf("tallied lines = %d, want 1 (context not counted)", f.lines)
 	}
 }
 

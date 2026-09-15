@@ -18,10 +18,21 @@ type JSONFormatter struct {
 	CountOnly bool
 	// FilesOnly emits {"type":"file"} objects instead of matches (-l).
 	FilesOnly bool
+	// Compact emits lean match records (no span/byte_offset/matches):
+	// the region id still carries the exact byte range, so citations
+	// lose nothing while drill-in reads cost ~1/3 less.
+	Compact bool
 
 	files int
 	lines int
 	errs  int
+	// suppressedLines were found but not emitted (--collapse); they are
+	// included in `lines` so its meaning (total found) never changes.
+	suppressedLines int
+	// Last tallied (file, query) — consecutive Format calls for the same
+	// result (budget chunking) must count the file once.
+	lastFile  string
+	lastQuery string
 	// Per-query totals for --batch, in first-seen order.
 	queryOrder  []string
 	queryTotals map[string]*[2]int // query -> {files, lines}
@@ -47,6 +58,9 @@ type jsonMatch struct {
 	Region  string    `json:"region,omitempty"`
 	Section string    `json:"section,omitempty"`
 	Scope   string    `json:"scope,omitempty"`
+	// Page is the nearest <!-- p.N --> marker at or before the match
+	// (PDF-extracted documents); emitted with --sections/--scope.
+	Page int `json:"page,omitempty"`
 	// Captures holds structural hole bindings (-S): hole name → matched
 	// text. Anonymous :[_] holes are omitted.
 	Captures map[string]string `json:"captures,omitempty"`
@@ -54,6 +68,22 @@ type jsonMatch struct {
 	// still covers exactly the emitted bytes.
 	Truncated bool   `json:"truncated,omitempty"`
 	Query     string `json:"query,omitempty"`
+}
+
+// jsonMatchCompact is the --compact match record: everything an agent
+// needs to read and cite, nothing more.
+type jsonMatchCompact struct {
+	Type      string            `json:"type"`
+	File      string            `json:"file,omitempty"`
+	LineNum   int               `json:"line_number"`
+	Text      string            `json:"text"`
+	Region    string            `json:"region,omitempty"`
+	Section   string            `json:"section,omitempty"`
+	Scope     string            `json:"scope,omitempty"`
+	Page      int               `json:"page,omitempty"`
+	Captures  map[string]string `json:"captures,omitempty"`
+	Truncated bool              `json:"truncated,omitempty"`
+	Query     string            `json:"query,omitempty"`
 }
 
 type jsonPos struct {
@@ -83,15 +113,31 @@ func (f *JSONFormatter) queryEntry(query string) *[2]int {
 	return qt
 }
 
-// tally records emitted totals (overall and per batch query).
-func (f *JSONFormatter) tally(query string, lines int) {
-	f.files++
+// AddSuppressedLines records lines that were found but suppressed
+// before formatting (--collapse), keeping the summary's `lines` field a
+// true total. The summary reports `shown_lines` separately when they
+// differ.
+func (f *JSONFormatter) AddSuppressedLines(n int) {
+	f.lines += n
+	f.suppressedLines += n
+}
+
+// tally records emitted totals (overall and per batch query). A file
+// split across consecutive calls (budget chunking) counts once.
+func (f *JSONFormatter) tally(file, query string, lines int) {
+	newFile := file != f.lastFile || query != f.lastQuery
+	f.lastFile, f.lastQuery = file, query
+	if newFile {
+		f.files++
+	}
 	f.lines += lines
 	if query == "" {
 		return
 	}
 	qt := f.queryEntry(query)
-	qt[0]++
+	if newFile {
+		qt[0]++
+	}
 	qt[1] += lines
 }
 
@@ -122,7 +168,7 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 			buf = appendJSONString(buf, result.Query)
 		}
 		buf = append(buf, "}\n"...)
-		f.tally(result.Query, 0)
+		f.tally(result.FilePath, result.Query, 0)
 		return buf
 	}
 
@@ -138,7 +184,7 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 			buf = appendJSONString(buf, result.Query)
 		}
 		buf = append(buf, "}\n"...)
-		f.tally(result.Query, count)
+		f.tally(result.FilePath, result.Query, count)
 		return buf
 	}
 
@@ -146,9 +192,10 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 	emitted := 0
 	for i := range ms.Matches {
 		m := &ms.Matches[i]
-		// Skip context lines and group separators (LineStart < 0) — JSON
-		// consumers get real matched lines only.
-		if m.IsContext || m.LineStart < 0 {
+		// Skip group separators (LineStart < 0); context lines (-C) are
+		// emitted as their own record type so JSON mode has parity with
+		// plain mode (report bug 10).
+		if m.LineStart < 0 {
 			continue
 		}
 
@@ -161,44 +208,62 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 			Truncated:  m.Truncated,
 			Query:      result.Query,
 		}
+		if m.IsContext {
+			jm.Type = "context"
+		}
 
 		span := [2]int64{m.ByteOffset, m.ByteOffset + int64(m.LineLen)}
 		jm.Span = &span
 		jm.Region = result.FilePath + "@" +
 			strconv.FormatInt(span[0], 10) + "-" + strconv.FormatInt(span[1], 10)
-		if f.Sections {
-			if h := sectionHeading(ms.Data, m.LineStart); h != nil {
-				jm.Section = string(h)
+		if !m.IsContext {
+			if f.Sections {
+				if h := sectionHeading(ms.Data, m.LineStart); h != nil {
+					jm.Section = string(h)
+				}
 			}
-		}
-		if f.Scope {
-			if s := enclosingScope(ms.Data, m.LineStart, result.FilePath); s != nil {
-				jm.Scope = string(s)
+			if f.Scope {
+				if s := enclosingScope(ms.Data, m.LineStart, result.FilePath); s != nil {
+					jm.Scope = string(s)
+				}
 			}
-		}
-		if caps := ms.MatchCaptures(i); len(caps) > 0 {
-			jm.Captures = make(map[string]string, len(caps))
-			for _, c := range caps {
-				if c.Name != "_" {
-					jm.Captures[c.Name] = string(ms.Data[c.Start:c.End])
+			if f.Sections || f.Scope {
+				jm.Page = nearestPage(ms.Data, m.LineStart)
+			}
+			if caps := ms.MatchCaptures(i); len(caps) > 0 {
+				jm.Captures = make(map[string]string, len(caps))
+				for _, c := range caps {
+					if c.Name != "_" {
+						jm.Captures[c.Name] = string(ms.Data[c.Start:c.End])
+					}
+				}
+			}
+			emitted++
+
+			positions := ms.MatchPositions(i)
+			if len(positions) > 0 {
+				jm.Matches = make([]jsonPos, len(positions))
+				for j, pos := range positions {
+					jm.Matches[j] = jsonPos{Start: pos[0], End: pos[1]}
 				}
 			}
 		}
-		emitted++
-
-		positions := ms.MatchPositions(i)
-		if len(positions) > 0 {
-			jm.Matches = make([]jsonPos, len(positions))
-			for j, pos := range positions {
-				jm.Matches[j] = jsonPos{Start: pos[0], End: pos[1]}
-			}
+		var data []byte
+		if f.Compact {
+			data, _ = json.Marshal(jsonMatchCompact{
+				Type: jm.Type, File: jm.File, LineNum: jm.LineNum,
+				Text: jm.Text, Region: jm.Region, Section: jm.Section,
+				Scope: jm.Scope, Page: jm.Page, Captures: jm.Captures,
+				Truncated: jm.Truncated, Query: jm.Query,
+			})
+		} else {
+			data, _ = json.Marshal(jm)
 		}
-		data, _ := json.Marshal(jm)
 		buf = append(buf, data...)
 		buf = append(buf, '\n')
 	}
 	if emitted > 0 {
-		f.tally(result.Query, emitted)
+		f.tally(result.FilePath, result.Query, emitted)
 	}
 	return buf
 }
@@ -212,6 +277,10 @@ func (f *JSONFormatter) Finish(buf []byte) []byte {
 	if !f.FilesOnly {
 		buf = append(buf, `,"lines":`...)
 		buf = strconv.AppendInt(buf, int64(f.lines), 10)
+		if f.suppressedLines > 0 {
+			buf = append(buf, `,"shown_lines":`...)
+			buf = strconv.AppendInt(buf, int64(f.lines-f.suppressedLines), 10)
+		}
 	}
 	buf = append(buf, `,"errors":`...)
 	buf = strconv.AppendInt(buf, int64(f.errs), 10)

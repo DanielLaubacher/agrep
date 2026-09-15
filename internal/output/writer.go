@@ -60,6 +60,13 @@ const flushThreshold = 256 * 1024
 // and writing them in sequence-number order. Formatted output accumulates in a
 // single reused buffer and is flushed in large batches to minimize syscalls.
 func (ow *OrderedWriter) WriteOrdered(results <-chan Result, onMatch func()) {
+	ow.WriteOrderedTail(results, onMatch, nil)
+}
+
+// WriteOrderedTail is WriteOrdered plus a tail hook: once the result
+// stream has drained, tail() supplies extra unsequenced results (walk
+// errors) formatted before the summary trailer.
+func (ow *OrderedWriter) WriteOrderedTail(results <-chan Result, onMatch func(), tail func() []Result) {
 	nextSeq := 1
 	pending := make(map[int]Result)
 	var out []byte // accumulated formatted output, flushed in batches
@@ -86,6 +93,12 @@ func (ow *OrderedWriter) WriteOrdered(results <-chan Result, onMatch func()) {
 			}
 		} else {
 			pending[r.SeqNum] = r
+		}
+	}
+
+	if tail != nil {
+		for _, r := range tail() {
+			out = ow.writeResult(out, r)
 		}
 	}
 

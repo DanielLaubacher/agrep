@@ -23,10 +23,17 @@ const blockMaxBytes = 32 * 1024
 
 type BlockFormatter struct {
 	inner Formatter
+	// Cross-call dedupe state: the budget formatter may split one file's
+	// matches across consecutive Format calls, so the last emitted block
+	// per (file, query) must survive between calls or a block with
+	// matches in two chunks would be emitted twice.
+	lastFile  string
+	lastQuery string
+	lastBlock int
 }
 
 func NewBlockFormatter(inner Formatter) *BlockFormatter {
-	return &BlockFormatter{inner: inner}
+	return &BlockFormatter{inner: inner, lastBlock: -1}
 }
 
 // blockBounds resolves the enclosing block of the line at lineStart:
@@ -166,6 +173,11 @@ func (f *BlockFormatter) Format(buf []byte, result Result, multiFile bool) []byt
 
 	out := matcher.MatchSet{Data: ms.Data, Captures: ms.Captures}
 	lastStart := -1
+	lastFromPrevCall := false
+	if result.FilePath == f.lastFile && result.Query == f.lastQuery {
+		lastStart = f.lastBlock
+		lastFromPrevCall = lastStart >= 0
+	}
 	changed := false
 	for i := range ms.Matches {
 		m := ms.Matches[i]
@@ -185,10 +197,16 @@ func (f *BlockFormatter) Format(buf []byte, result Result, multiFile bool) []byt
 			m.PosIdx, m.PosCount = rebase(&out, ms, i, m.LineStart, m.LineLen)
 			out.Matches = append(out.Matches, m)
 			lastStart = -1
+			lastFromPrevCall = false
 			continue
 		}
 		changed = true
 		if bs == lastStart {
+			if lastFromPrevCall {
+				// Block already emitted by an earlier chunked call: the
+				// match's line is on screen, nothing more to add.
+				continue
+			}
 			// Same block as the previous match: merge highlights.
 			last := &out.Matches[len(out.Matches)-1]
 			pi, pc := rebase(&out, ms, i, bs, last.LineLen)
@@ -216,7 +234,10 @@ func (f *BlockFormatter) Format(buf []byte, result Result, multiFile bool) []byt
 			Truncated:  trunc,
 		})
 		lastStart = bs
+		lastFromPrevCall = false
 	}
+
+	f.lastFile, f.lastQuery, f.lastBlock = result.FilePath, result.Query, lastStart
 
 	if !changed {
 		return f.inner.Format(buf, result, multiFile)
@@ -249,6 +270,75 @@ func rebase(out *matcher.MatchSet, ms *matcher.MatchSet, i int, newStart, newLen
 	return idx, len(out.Positions) - idx
 }
 
+// FindNamedBlock resolves a named unit in data for scope-addressable
+// --get-region: kind "func" finds a definition line (per the file's
+// language family) containing name as a whole word and returns its
+// whole block; kind "section" finds a Markdown heading containing name
+// (case-insensitive) and returns the whole section. Returns the block
+// bounds, the 1-based line numbers of every candidate (the block is the
+// first), and whether anything matched.
+func FindNamedBlock(data []byte, path, kind, name string) (start, end int, candidates []int, ok bool) {
+	fam := lang.ByPath(path)
+	nameBytes := []byte(name)
+	lineNum := 0
+	pos := 0
+	for pos < len(data) {
+		lineNum++
+		le := lineEnd(data, pos)
+		line := data[pos:le]
+
+		var hit bool
+		switch kind {
+		case "section":
+			hit = len(line) > 0 && line[0] == '#' &&
+				bytes.Contains(bytes.ToLower(line), bytes.ToLower(nameBytes))
+		default: // func
+			_, trimmed := indentAndTrim(line)
+			hit = len(trimmed) > 0 && !isCommentLine(trimmed) &&
+				isDefLine(trimmed, fam) && containsWord(trimmed, nameBytes)
+		}
+		if hit {
+			if len(candidates) == 0 {
+				bs, be, _, bok := blockBounds(data, pos, path)
+				if bok {
+					start, end = bs, be
+				} else {
+					start, end = pos, le // no block notion: the line itself
+				}
+			}
+			candidates = append(candidates, lineNum)
+		}
+		pos = le + 1
+	}
+	return start, end, candidates, len(candidates) > 0
+}
+
+// containsWord reports whether name occurs in line bounded by
+// non-identifier bytes.
+func containsWord(line, name []byte) bool {
+	if len(name) == 0 {
+		return false
+	}
+	for from := 0; ; {
+		i := bytes.Index(line[from:], name)
+		if i < 0 {
+			return false
+		}
+		i += from
+		before := i == 0 || !isIdentByte(line[i-1])
+		afterIdx := i + len(name)
+		after := afterIdx >= len(line) || !isIdentByte(line[afterIdx])
+		if before && after {
+			return true
+		}
+		from = i + 1
+	}
+}
+
+func isIdentByte(c byte) bool {
+	return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
 // Finish and RegisterQueries forward through the wrapper chain.
 func (f *BlockFormatter) Finish(buf []byte) []byte {
 	if fin, ok := f.inner.(Finisher); ok {
@@ -260,6 +350,13 @@ func (f *BlockFormatter) Finish(buf []byte) []byte {
 func (f *BlockFormatter) RegisterQueries(queries []string) {
 	if qr, ok := f.inner.(QueryRegistrar); ok {
 		qr.RegisterQueries(queries)
+	}
+}
+
+// AddSuppressedLines forwards --collapse suppression accounting.
+func (f *BlockFormatter) AddSuppressedLines(n int) {
+	if sr, ok := f.inner.(suppressedReporter); ok {
+		sr.AddSuppressedLines(n)
 	}
 }
 

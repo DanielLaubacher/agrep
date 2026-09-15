@@ -54,6 +54,34 @@ func sectionHeadingAt(data []byte, lineStart int) ([]byte, int) {
 	}
 }
 
+// pageMarker is the marker PDF extraction leaves in Markdown: <!-- p.N -->.
+var pageMarker = []byte("<!-- p.")
+
+// nearestPage returns the page number of the nearest page marker at or
+// before lineStart, or 0 if none is found within the scan window. It
+// turns a citation in a PDF-extracted book into a page reference
+// without a manual scan.
+func nearestPage(data []byte, lineStart int) int {
+	if lineStart > len(data) {
+		lineStart = len(data)
+	}
+	lo := 0
+	if lineStart > sectionScanLimit {
+		lo = lineStart - sectionScanLimit
+	}
+	i := bytes.LastIndex(data[lo:lineStart], pageMarker)
+	if i < 0 {
+		return 0
+	}
+	pos := lo + i + len(pageMarker)
+	page := 0
+	for pos < len(data) && data[pos] >= '0' && data[pos] <= '9' {
+		page = page*10 + int(data[pos]-'0')
+		pos++
+	}
+	return page
+}
+
 // budgetBytesPerToken is the byte→token heuristic (~4 bytes per token for
 // English text and code).
 const budgetBytesPerToken = 4
@@ -72,6 +100,12 @@ type BudgetFormatter struct {
 	shownFiles   int
 	omittedLines int
 	omittedFiles int
+
+	// Per-query TRUE totals for --batch (counted before the budget cut,
+	// so the breakdown — including explicit zero-hit probes — survives
+	// budget wrapping).
+	queryOrder  []string
+	queryTotals map[string]*[2]int // query -> {files, lines}
 }
 
 // NewBudgetFormatter wraps inner with a budget of maxTokens output tokens.
@@ -102,7 +136,15 @@ func matchLineCount(r *Result) int {
 
 func (f *BudgetFormatter) Format(buf []byte, result Result, multiFile bool) []byte {
 	lines := matchLineCount(&result)
-	if result.Err != nil || lines == 0 {
+	if result.Err != nil {
+		return f.inner.Format(buf, result, multiFile)
+	}
+	if result.Query != "" && (lines > 0 || result.HasMatch()) {
+		qt := f.queryEntry(result.Query)
+		qt[0]++
+		qt[1] += lines
+	}
+	if lines == 0 {
 		return f.inner.Format(buf, result, multiFile)
 	}
 
@@ -112,12 +154,75 @@ func (f *BudgetFormatter) Format(buf []byte, result Result, multiFile bool) []by
 		return buf
 	}
 
-	before := len(buf)
-	buf = f.inner.Format(buf, result, multiFile)
-	f.spent += len(buf) - before
-	f.shownLines += lines
-	f.shownFiles++
+	ms := &result.MatchSet
+	// -c and -l results carry no per-line records — one small object each.
+	if result.MatchCount > 0 || len(ms.Matches) == 0 {
+		before := len(buf)
+		buf = f.inner.Format(buf, result, multiFile)
+		f.spent += len(buf) - before
+		f.shownLines += lines
+		f.shownFiles++
+		return buf
+	}
+
+	// Per-record enforcement: emit one chunk at a time (a real match plus
+	// its adjacent context/separator records) and stop the moment the
+	// budget is spent — a single file with thousands of hits must not
+	// blow through the cap. Wrapped formatters keep cross-call state
+	// (section headers, block dedupe, JSON tallies) so chunked calls emit
+	// exactly what one whole-file call would, minus the cut records.
+	shown := 0
+	for i := 0; i < len(ms.Matches); {
+		if f.spent >= f.limitBytes {
+			break
+		}
+		// Chunk [i, j): everything up to (not including) the real match
+		// after the first real match at or beyond i.
+		j := i
+		seenReal := false
+		for j < len(ms.Matches) {
+			m := &ms.Matches[j]
+			if !m.IsContext && m.LineStart >= 0 {
+				if seenReal {
+					break
+				}
+				seenReal = true
+			}
+			j++
+		}
+		sub := result
+		sub.MatchSet = ms.WithMatches(ms.Matches[i:j])
+		before := len(buf)
+		buf = f.inner.Format(buf, sub, multiFile)
+		f.spent += len(buf) - before
+		if seenReal {
+			shown++
+		}
+		i = j
+	}
+
+	f.shownLines += shown
+	f.omittedLines += lines - shown
+	if shown > 0 {
+		f.shownFiles++
+	} else {
+		f.omittedFiles++
+	}
 	return buf
+}
+
+// queryEntry returns (creating if needed) the per-query totals slot.
+func (f *BudgetFormatter) queryEntry(query string) *[2]int {
+	if f.queryTotals == nil {
+		f.queryTotals = make(map[string]*[2]int)
+	}
+	qt := f.queryTotals[query]
+	if qt == nil {
+		qt = &[2]int{}
+		f.queryTotals[query] = qt
+		f.queryOrder = append(f.queryOrder, query)
+	}
+	return qt
 }
 
 // Finish appends the budget summary. Call once after all results.
@@ -131,6 +236,25 @@ func (f *BudgetFormatter) Finish(buf []byte) []byte {
 		buf = strconv.AppendInt(buf, int64(f.omittedLines), 10)
 		buf = append(buf, `,"omitted_files":`...)
 		buf = strconv.AppendInt(buf, int64(f.omittedFiles), 10)
+		// --batch: per-query TRUE totals (found, not just shown), so
+		// zero-hit probes stay explicit under a budget.
+		if len(f.queryOrder) > 0 {
+			buf = append(buf, `,"queries":[`...)
+			for i, q := range f.queryOrder {
+				if i > 0 {
+					buf = append(buf, ',')
+				}
+				qt := f.queryTotals[q]
+				buf = append(buf, `{"query":`...)
+				buf = appendJSONString(buf, q)
+				buf = append(buf, `,"files":`...)
+				buf = strconv.AppendInt(buf, int64(qt[0]), 10)
+				buf = append(buf, `,"lines":`...)
+				buf = strconv.AppendInt(buf, int64(qt[1]), 10)
+				buf = append(buf, '}')
+			}
+			buf = append(buf, ']')
+		}
 		buf = append(buf, "}\n"...)
 		return buf
 	}
@@ -149,9 +273,12 @@ func (f *BudgetFormatter) Finish(buf []byte) []byte {
 	return buf
 }
 
-// RegisterQueries forwards batch query registration to the wrapped
-// formatter, so per-query zero totals survive budget wrapping.
+// RegisterQueries seeds per-query totals (zero-hit probes must appear
+// in the summary) and forwards to the wrapped formatter.
 func (f *BudgetFormatter) RegisterQueries(queries []string) {
+	for _, q := range queries {
+		f.queryEntry(q)
+	}
 	if qr, ok := f.inner.(QueryRegistrar); ok {
 		qr.RegisterQueries(queries)
 	}
@@ -162,6 +289,42 @@ func (f *BudgetFormatter) RegisterQueries(queries []string) {
 type Finisher interface {
 	Finish(buf []byte) []byte
 }
+
+// DeferredFinish wraps a formatter so its Finish trailer is withheld
+// until Final() — used by --suggest so probe records precede the
+// closing summary instead of appearing after it.
+type DeferredFinish struct {
+	inner Formatter
+}
+
+func NewDeferredFinish(inner Formatter) *DeferredFinish {
+	return &DeferredFinish{inner: inner}
+}
+
+func (d *DeferredFinish) Format(buf []byte, result Result, multiFile bool) []byte {
+	return d.inner.Format(buf, result, multiFile)
+}
+
+// Finish is deferred: the summary is only produced by Final.
+func (d *DeferredFinish) Finish(buf []byte) []byte { return buf }
+
+// Final emits the wrapped formatter's real trailer.
+func (d *DeferredFinish) Final(buf []byte) []byte {
+	if fin, ok := d.inner.(Finisher); ok {
+		return fin.Finish(buf)
+	}
+	return buf
+}
+
+// RegisterQueries forwards through the wrapper chain.
+func (d *DeferredFinish) RegisterQueries(queries []string) {
+	if qr, ok := d.inner.(QueryRegistrar); ok {
+		qr.RegisterQueries(queries)
+	}
+}
+
+var _ Formatter = (*DeferredFinish)(nil)
+var _ Finisher = (*DeferredFinish)(nil)
 
 // QueryRegistrar is implemented by formatters that report per-query
 // totals and want the full query list up front (--batch).

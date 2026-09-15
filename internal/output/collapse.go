@@ -72,9 +72,18 @@ func (f *CollapseFormatter) Format(buf []byte, result Result, multiFile bool) []
 	return f.inner.Format(buf, filtered, multiFile)
 }
 
+// suppressedReporter lets a wrapper report found-but-suppressed lines
+// so the base summary's totals stay true totals.
+type suppressedReporter interface {
+	AddSuppressedLines(n int)
+}
+
 // Finish reports what was suppressed, then finishes the inner chain.
 func (f *CollapseFormatter) Finish(buf []byte) []byte {
 	if f.collapsedLines > 0 {
+		if sr, ok := f.inner.(suppressedReporter); ok {
+			sr.AddSuppressedLines(f.collapsedLines)
+		}
 		if f.json {
 			buf = append(buf, `{"type":"collapsed","lines":`...)
 			buf = strconv.AppendInt(buf, int64(f.collapsedLines), 10)
@@ -82,11 +91,11 @@ func (f *CollapseFormatter) Finish(buf []byte) []byte {
 			buf = strconv.AppendInt(buf, int64(f.collapsedTexts), 10)
 			buf = append(buf, "}\n"...)
 		} else {
-			buf = append(buf, "[agrep] collapsed "...)
+			buf = append(buf, "[agrep] suppressed "...)
 			buf = strconv.AppendInt(buf, int64(f.collapsedLines), 10)
-			buf = append(buf, " repeats of "...)
+			buf = append(buf, " repeated lines ("...)
 			buf = strconv.AppendInt(buf, int64(f.collapsedTexts), 10)
-			buf = append(buf, " line texts already shown 3x\n"...)
+			buf = append(buf, " distinct texts, each already shown 3x)\n"...)
 		}
 	}
 	if fin, ok := f.inner.(Finisher); ok {

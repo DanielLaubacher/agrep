@@ -1,6 +1,7 @@
 package output
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -111,5 +112,54 @@ func TestJSONSpanAndSection(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("JSON output missing %s:\n%s", want, out)
 		}
+	}
+}
+
+// multiLineResult builds a result with n matching lines "line0\nline1\n..."
+func multiLineResult(path string, n int) Result {
+	var data []byte
+	matches := make([]matcher.Match, n)
+	for i := 0; i < n; i++ {
+		start := len(data)
+		line := []byte("matching line number " + strconv.Itoa(i))
+		data = append(data, line...)
+		data = append(data, '\n')
+		matches[i] = matcher.Match{
+			LineNum:    i + 1,
+			LineStart:  start,
+			LineLen:    len(line),
+			ByteOffset: int64(start),
+		}
+	}
+	return Result{FilePath: path, MatchSet: matcher.MatchSet{Data: data, Matches: matches}}
+}
+
+// The budget must cut within a single file, not at file boundaries
+// (report bug 1): a file with many matches on a small budget emits only
+// the records that fit, and the summary stays exact.
+func TestBudgetFormatterCutsWithinFile(t *testing.T) {
+	inner := NewJSONFormatter()
+	bf := NewBudgetFormatter(inner, 50, true) // 200-byte budget
+	var buf []byte
+	buf = bf.Format(buf, multiLineResult("big.txt", 100), false)
+	buf = bf.Finish(buf)
+	out := string(buf)
+
+	if len(buf) > 200+400 { // budget + at most ~1 record + summary of slack
+		t.Errorf("output %d bytes far exceeds 200-byte budget:\n%s", len(buf), out)
+	}
+	if bf.shownLines == 0 || bf.shownLines >= 100 {
+		t.Errorf("shownLines = %d, want partial (0 < n < 100)", bf.shownLines)
+	}
+	if bf.shownLines+bf.omittedLines != 100 {
+		t.Errorf("shown %d + omitted %d != 100 total", bf.shownLines, bf.omittedLines)
+	}
+	if bf.shownFiles != 1 || bf.omittedFiles != 0 {
+		t.Errorf("files: shown %d omitted %d, want 1/0 (partially shown file)", bf.shownFiles, bf.omittedFiles)
+	}
+	// JSON summary from the inner formatter must not double-count the
+	// chunk-split file.
+	if inner.files != 1 {
+		t.Errorf("inner JSON files = %d, want 1 (chunked calls count once)", inner.files)
 	}
 }

@@ -95,3 +95,35 @@ func TestBlockFormatterRewrite(t *testing.T) {
 		t.Errorf("positions not rebased: %s", got)
 	}
 }
+
+// Scope-addressable regions (critique): file@func:Name and
+// file@section:Name resolve whole blocks.
+func TestFindNamedBlock(t *testing.T) {
+	goSrc := []byte("package x\n\nfunc alpha() {\n\treturn\n}\n\nfunc beta(n int) int {\n\treturn n\n}\n")
+	s, e, cands, ok := FindNamedBlock(goSrc, "x.go", "func", "beta")
+	if !ok || len(cands) != 1 {
+		t.Fatalf("beta: ok=%v cands=%v", ok, cands)
+	}
+	if got := string(goSrc[s:e]); got != "func beta(n int) int {\n\treturn n\n}" {
+		t.Errorf("beta block = %q", got)
+	}
+
+	// Word-bounded: "beta" must not match "betamax".
+	src2 := []byte("func betamax() {\n\treturn\n}\n")
+	if _, _, _, ok := FindNamedBlock(src2, "x.go", "func", "beta"); ok {
+		t.Error("beta matched betamax")
+	}
+
+	md := []byte("# Intro\ntext\n\n## Gob Encoding\nbody line\nmore\n\n## Next\nother\n")
+	s, e, _, ok = FindNamedBlock(md, "b.md", "section", "gob")
+	if !ok {
+		t.Fatal("section gob not found")
+	}
+	if got := string(md[s:e]); got != "## Gob Encoding\nbody line\nmore\n" && got != "## Gob Encoding\nbody line\nmore" {
+		t.Errorf("section = %q", got)
+	}
+
+	if _, _, _, ok := FindNamedBlock(md, "b.md", "func", "gob"); ok {
+		t.Error("func: should not resolve in Markdown")
+	}
+}
