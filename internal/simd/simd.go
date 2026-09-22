@@ -20,7 +20,7 @@ func IndexByte(data []byte, c byte) int {
 	i := 0
 
 	for i+32 <= n {
-		chunk := archsimd.LoadUint8x32Slice(data[i:])
+		chunk := archsimd.LoadUint8x32(data[i:])
 		mask := chunk.Equal(needle)
 		b := mask.ToBits()
 		if b != 0 {
@@ -63,7 +63,7 @@ func LastIndexByte(data []byte, c byte) int {
 
 	// SIMD scan from end, 32 bytes at a time
 	for i := n - tail - 32; i >= 0; i -= 32 {
-		chunk := archsimd.LoadUint8x32Slice(data[i:])
+		chunk := archsimd.LoadUint8x32(data[i:])
 		mask := chunk.Equal(needle)
 		b := mask.ToBits()
 		if b != 0 {
@@ -90,7 +90,7 @@ func Count(data []byte, c byte) int {
 	i := 0
 
 	for i+32 <= n {
-		chunk := archsimd.LoadUint8x32Slice(data[i:])
+		chunk := archsimd.LoadUint8x32(data[i:])
 		mask := chunk.Equal(needle)
 		b := mask.ToBits()
 		count += bits.OnesCount32(b)
@@ -122,10 +122,10 @@ func ToLowerASCII(dst, src []byte) {
 	i := 0
 
 	for i+32 <= n {
-		chunk := archsimd.LoadUint8x32Slice(src[i:])
+		chunk := archsimd.LoadUint8x32(src[i:])
 		isUpper := chunk.GreaterEqual(vecA).And(chunk.LessEqual(vecZ))
 		lowered := chunk.Add(vec32.Masked(isUpper))
-		lowered.StoreSlice(dst[i:])
+		lowered.Store(dst[i:])
 		i += 32
 	}
 

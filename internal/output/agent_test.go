@@ -139,18 +139,18 @@ func TestBudgetFormatterJSONPerQueryTrueTotals(t *testing.T) {
 	}
 }
 
-func TestJSONSpanAndSection(t *testing.T) {
+func TestJSONSpanAndScope(t *testing.T) {
 	data := []byte("## Heading\nneedle line here\n")
 	lineStart := strings.Index(string(data), "needle")
 	jf := NewJSONFormatter()
-	jf.Sections = true
+	jf.Scope = true
 	r := fakeResult("doc.md", data, lineStart, len("needle line here"))
 	out := string(jf.Format(nil, r, true))
 
 	for _, want := range []string{
 		`"span":[11,27]`,
 		`"region":"doc.md@11-27"`,
-		`"section":"## Heading"`,
+		`"scope":"## Heading"`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("JSON output missing %s:\n%s", want, out)

@@ -78,7 +78,6 @@ type Config struct {
 	Capture      string   // --capture: hole name for --histogram aggregation
 	Block        bool     // --block: emit the whole enclosing definition block
 	TopK         int      // --top: limit outline/histogram to the K busiest entries
-	Sections     bool     // --sections: annotate matches with Markdown headings
 	Scope        bool     // --scope: annotate matches with the enclosing definition
 	BatchFile    string   // --batch: file of patterns, one per line
 	FilesFrom    string   // --files-from: file of paths to search ('-' = stdin)

@@ -71,7 +71,7 @@ func indexAllByte(data []byte, c byte) []int {
 	i := 0
 
 	for i+32 <= len(data) {
-		chunk := archsimd.LoadUint8x32Slice(data[i:])
+		chunk := archsimd.LoadUint8x32(data[i:])
 		mask := chunk.Equal(needle)
 		b := mask.ToBits()
 		for b != 0 {
@@ -204,8 +204,8 @@ func IndexCaseInsensitive(data, patternLower []byte) int {
 	limit := len(data) - plen + 1
 
 	for i+32 <= limit {
-		blockFirst := archsimd.LoadUint8x32Slice(data[i+o1:])
-		blockLast := archsimd.LoadUint8x32Slice(data[i+o2:])
+		blockFirst := archsimd.LoadUint8x32(data[i+o1:])
+		blockLast := archsimd.LoadUint8x32(data[i+o2:])
 
 		mFirstLo := blockFirst.Equal(bFirstLo)
 		mFirstHi := blockFirst.Equal(bFirstHi)
@@ -267,8 +267,8 @@ func IndexAllCaseInsensitive(data, patternLower []byte) []int {
 	limit := len(data) - plen + 1
 
 	for i+32 <= limit {
-		blockFirst := archsimd.LoadUint8x32Slice(data[i+o1:])
-		blockLast := archsimd.LoadUint8x32Slice(data[i+o2:])
+		blockFirst := archsimd.LoadUint8x32(data[i+o1:])
+		blockLast := archsimd.LoadUint8x32(data[i+o2:])
 
 		mFirst := blockFirst.Equal(bFirstLo).Or(blockFirst.Equal(bFirstHi))
 		mLast := blockLast.Equal(bLastLo).Or(blockLast.Equal(bLastHi))

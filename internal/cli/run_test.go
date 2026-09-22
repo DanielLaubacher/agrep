@@ -10,9 +10,9 @@ import (
 
 // --structural silently defaulted to Generic (delimiters only, no
 // string/comment awareness) whenever --lang was omitted, even against a
-// single obviously-Go file — a silent trap matching --block/--scope/
-// --sections' own per-file auto-detection would have avoided (report
-// bug). resolveStructuralLang covers the cases that trap has to handle.
+// single obviously-Go file — a silent trap matching --block/--scope's
+// own per-file auto-detection would have avoided (report bug).
+// resolveStructuralLang covers the cases that trap has to handle.
 func TestResolveStructuralLang(t *testing.T) {
 	dir := t.TempDir()
 	goFile := filepath.Join(dir, "a.go")

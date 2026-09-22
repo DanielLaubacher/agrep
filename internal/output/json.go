@@ -10,8 +10,6 @@ import (
 // It tallies what it emits and appends an exact {"type":"summary",...}
 // trailer via Finish, so a JSON consumer always receives totals.
 type JSONFormatter struct {
-	// Sections annotates each match with its enclosing Markdown heading.
-	Sections bool
 	// Scope annotates each match with its enclosing definition line
 	// (--scope); Markdown files fall back to the heading.
 	Scope bool
@@ -64,12 +62,11 @@ type jsonMatch struct {
 	// Span is the absolute [start, end) byte range of the line within the
 	// file; Region is the same as a self-contained "path@start-end" id
 	// resolvable with --get-region.
-	Span    *[2]int64 `json:"span,omitempty"`
-	Region  string    `json:"region,omitempty"`
-	Section string    `json:"section,omitempty"`
-	Scope   string    `json:"scope,omitempty"`
+	Span   *[2]int64 `json:"span,omitempty"`
+	Region string    `json:"region,omitempty"`
+	Scope  string    `json:"scope,omitempty"`
 	// Page is the nearest <!-- p.N --> marker at or before the match
-	// (PDF-extracted documents); emitted with --sections/--scope.
+	// (PDF-extracted documents); emitted with --scope.
 	Page int `json:"page,omitempty"`
 	// Kind is "definition" when the matched line is definition-shaped
 	// (func/def/class/type per language family) — lets an agent split
@@ -92,7 +89,6 @@ type jsonMatchCompact struct {
 	LineNum   int               `json:"line_number"`
 	Text      string            `json:"text"`
 	Region    string            `json:"region,omitempty"`
-	Section   string            `json:"section,omitempty"`
 	Scope     string            `json:"scope,omitempty"`
 	Page      int               `json:"page,omitempty"`
 	Kind      string            `json:"kind,omitempty"`
@@ -248,21 +244,14 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 		jm.Region = result.FilePath + "@" +
 			strconv.FormatInt(span[0], 10) + "-" + strconv.FormatInt(span[1], 10)
 		if !m.IsContext {
-			if f.Sections {
-				if h := sectionHeading(ms.Data, m.LineStart); h != nil {
-					jm.Section = string(h)
-				}
-			}
 			if f.Scope {
 				if s := enclosingScope(ms.Data, m.LineStart, result.FilePath); s != nil {
 					jm.Scope = string(s)
 				}
-			}
-			// Kind/Page ride on the same opt-in as Sections/Scope: language
-			// detection plus a keyword scan (IsDefinitionLine) isn't free,
-			// so it runs only when the caller already asked for annotated
-			// output, matching Page's existing gate.
-			if f.Sections || f.Scope {
+				// Kind/Page ride on the same opt-in as Scope: language
+				// detection plus a keyword scan (IsDefinitionLine) isn't
+				// free, so it runs only when the caller already asked for
+				// annotated output, matching Page's existing gate.
 				jm.Page = nearestPage(ms.Data, m.LineStart)
 				if IsDefinitionLine(firstLine(ms.Data, m.LineStart, m.LineLen), result.FilePath) {
 					jm.Kind = "definition"
@@ -289,7 +278,7 @@ func (f *JSONFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 		if f.Compact {
 			data, _ = json.Marshal(jsonMatchCompact{
 				Type: jm.Type, File: jm.File, LineNum: jm.LineNum,
-				Text: jm.Text, Region: jm.Region, Section: jm.Section,
+				Text: jm.Text, Region: jm.Region,
 				Scope: jm.Scope, Page: jm.Page, Kind: jm.Kind,
 				Captures: jm.Captures, Truncated: jm.Truncated,
 				Query: jm.Query,

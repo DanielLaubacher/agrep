@@ -326,8 +326,7 @@ Designed for AI agents using agrep as a sensing API (see agent-mode.md):
 | `--histogram` | Count distinct matched texts (`uniq -c` built in); composes with `-o` pipelines. |
 | `--rank MODE` | `--outline` ordering: `count` (default), `density` (matches/KB, demotes vendored/generated files), or `defs` (definition lines first, demotes tests). |
 | `--collapse` | Suppress repeats of an identical match line after the 3rd occurrence (stops a generated file from repeating one line hundreds of times); the summary reports exactly what was collapsed and totals stay true. |
-| `--sections` | Annotate matches with the enclosing Markdown heading (`§` group lines in text, `"section"` field in JSON). |
-| `--scope` | Annotate matches with their enclosing definition (func/class/def by language; falls back to the Markdown heading). |
+| `--scope` | Annotate matches with their enclosing definition (func/class/def by language; falls back to the Markdown heading) — `§` group lines in text, `"scope"` field in JSON. |
 | `--batch FILE` | Run every pattern in FILE (one per line, blank lines and `#`-prefixed comments skipped) in a single pass; each file is read once. Results carry their query (`[pattern]` prefix / `"query"` field), and zero-hit queries are still listed explicitly. |
 | `--files-from FILE` | Search the files listed in FILE (`-` = stdin), one path per line, instead of walking — lets you compose `agrep -rl ... \| agrep --files-from - ...`. |
 | `--changed-since REF` | Search only files changed since the git REF, plus untracked files (requires git). |
@@ -343,6 +342,6 @@ Designed for AI agents using agrep as a sensing API (see agent-mode.md):
 Example agent workflow over a book corpus:
 
     agrep --outline --top 10 -r 'backoff' ./books_text/     # who covers it
-    agrep --sections -rn --max-tokens 2000 'backoff' ./books_text/Manning/
+    agrep --scope -rn --max-tokens 2000 'backoff' ./books_text/Manning/
     agrep --batch probes.txt --json -r ./books_text/        # expanded concept
     agrep --get-region 'books_text/Manning/x.md@3120-3245'  # verify a citation

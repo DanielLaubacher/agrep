@@ -28,7 +28,6 @@ func TestSkillTextCoversJSONContract(t *testing.T) {
 		"--rank",
 		"--batch",
 		"--suggest",
-		"--sections",
 		"--scope",
 		"--ident",
 		"--histogram",

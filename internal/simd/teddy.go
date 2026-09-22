@@ -95,7 +95,7 @@ func broadcastTable(tbl [16]uint8) archsimd.Uint8x32 {
 	var arr [32]uint8
 	copy(arr[:16], tbl[:])
 	copy(arr[16:], tbl[:])
-	return archsimd.LoadUint8x32(&arr)
+	return archsimd.LoadUint8x32Array(&arr)
 }
 
 // pickTeddyOffsets returns the two pattern offsets whose byte sets are
@@ -153,8 +153,8 @@ func (t *Teddy) Scan(data []byte, fn func(pos, pat int) bool) {
 	// reads up to data[i+31+o2], so stop when that would pass the end.
 	i := 0
 	for i+32+o2 <= n {
-		blockA := archsimd.LoadUint8x32Slice(data[i+o1:])
-		blockB := archsimd.LoadUint8x32Slice(data[i+o2:])
+		blockA := archsimd.LoadUint8x32(data[i+o1:])
+		blockB := archsimd.LoadUint8x32(data[i+o2:])
 
 		loIdxA := blockA.And(mask0F)
 		hiIdxA := blockA.AsUint16x16().ShiftAllRight(4).AsUint8x32().And(mask0F)
@@ -170,7 +170,7 @@ func (t *Teddy) Scan(data []byte, fn func(pos, pat int) bool) {
 		// Lanes equal to zero have no candidate; complement for hit lanes.
 		hits := ^cand.Equal(zero).ToBits()
 		if hits != 0 {
-			cand.Store(&maskBuf)
+			cand.StoreArray(&maskBuf)
 			for hits != 0 {
 				j := bits.TrailingZeros32(hits)
 				hits &= hits - 1

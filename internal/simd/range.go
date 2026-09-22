@@ -25,7 +25,7 @@ func IndexByteRange(data []byte, lo, hi byte) int {
 	i := 0
 
 	for i+32 <= n {
-		chunk := archsimd.LoadUint8x32Slice(data[i:])
+		chunk := archsimd.LoadUint8x32(data[i:])
 		inRange := chunk.GreaterEqual(vecLo).And(chunk.LessEqual(vecHi))
 		b := inRange.ToBits()
 		if b != 0 {
@@ -74,7 +74,7 @@ func (s ByteRangeScanner) Next(data []byte, from int) int {
 	i := from
 
 	for i+32 <= n {
-		chunk := archsimd.LoadUint8x32Slice(data[i:])
+		chunk := archsimd.LoadUint8x32(data[i:])
 		inRange := chunk.GreaterEqual(s.vecLo).And(chunk.LessEqual(s.vecHi))
 		b := inRange.ToBits()
 		if b != 0 {
@@ -123,7 +123,7 @@ func (s MultiByteRangeScanner) Next(data []byte, from int) int {
 	i := from
 
 	for i+32 <= n {
-		chunk := archsimd.LoadUint8x32Slice(data[i:])
+		chunk := archsimd.LoadUint8x32(data[i:])
 		combined := chunk.GreaterEqual(s.vecs[0].lo).And(chunk.LessEqual(s.vecs[0].hi))
 		for j := 1; j < len(s.vecs); j++ {
 			r := chunk.GreaterEqual(s.vecs[j].lo).And(chunk.LessEqual(s.vecs[j].hi))
@@ -163,7 +163,7 @@ func (s ByteRangeScanner) BatchNext(data []byte, from, end int, buf []int) int {
 	bufLen := len(buf)
 
 	for i+32 <= n {
-		chunk := archsimd.LoadUint8x32Slice(data[i:])
+		chunk := archsimd.LoadUint8x32(data[i:])
 		inRange := chunk.GreaterEqual(s.vecLo).And(chunk.LessEqual(s.vecHi))
 		b := inRange.ToBits()
 		for b != 0 {
@@ -206,7 +206,7 @@ func (s MultiByteRangeScanner) BatchNext(data []byte, from, end int, buf []int) 
 	bufLen := len(buf)
 
 	for i+32 <= n {
-		chunk := archsimd.LoadUint8x32Slice(data[i:])
+		chunk := archsimd.LoadUint8x32(data[i:])
 		combined := chunk.GreaterEqual(s.vecs[0].lo).And(chunk.LessEqual(s.vecs[0].hi))
 		for j := 1; j < len(s.vecs); j++ {
 			r := chunk.GreaterEqual(s.vecs[j].lo).And(chunk.LessEqual(s.vecs[j].hi))
@@ -272,7 +272,7 @@ func IndexByteRanges(data []byte, ranges [][2]byte) int {
 
 	i := 0
 	for i+32 <= n {
-		chunk := archsimd.LoadUint8x32Slice(data[i:])
+		chunk := archsimd.LoadUint8x32(data[i:])
 
 		// OR all range masks together
 		combined := chunk.GreaterEqual(vecs[0].lo).And(chunk.LessEqual(vecs[0].hi))

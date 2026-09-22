@@ -1,8 +1,8 @@
 package output
 
-// --scope: annotate matches with their enclosing definition — the
-// --sections idea extended to code. A bounded backward "sticky scope"
-// scan: walk line starts upward from the match, tracking the minimum
+// --scope: annotate matches with their enclosing definition. A bounded
+// backward "sticky scope" scan: walk line starts upward from the match,
+// tracking the minimum
 // indentation of significant lines seen; the first definition-shaped
 // line (per language family, chosen by file extension) at lower
 // indentation than everything below it is the enclosing scope. Comments

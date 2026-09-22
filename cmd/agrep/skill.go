@@ -35,8 +35,8 @@ normal outcome, not a failure — pair it with --suggest.
 3. Narrow — read matches with context, under a budget:
      agrep -rn --scope --max-tokens 2000 'jittered backoff' CORPUS/
    --scope names the enclosing function/class (Markdown: the heading;
-   --sections is the Markdown-only variant; both add "page" from
-   <!-- p.N --> markers in PDF-extracted text). --max-tokens is a hard
+   it adds "page" from <!-- p.N --> markers in PDF-extracted text).
+   --max-tokens is a hard
    cap enforced per record — it cuts inside a file, overshooting by at
    most one record — and the summary reports exactly what was omitted
    (totals are always true: the search itself never truncates). Output

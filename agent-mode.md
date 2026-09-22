@@ -31,15 +31,7 @@ One line per file answers "who talks about X" across a corpus for a few
 hundred output tokens. JSON mode emits one object per file (`"exemplar"`
 field) plus a summary trailer.
 
-### 3. Section context — `--sections`
-Every match is annotated with the nearest preceding Markdown heading —
-the section it lives in. Text mode prints a `§ heading` group line when
-the section changes; JSON mode adds a `"section"` field. Designed for
-prose/book corpora where "which section is this from" is the context an
-agent actually needs (a `#`-heading scan bounded to 64KB backward; cheap,
-and only for printed matches).
-
-### 4. Batch multi-query — `--batch FILE`
+### 3. Batch multi-query — `--batch FILE`
 One pattern per line (blank lines and `#` comments ignored); every file
 is read once and searched by all queries; each result is attributed to
 its query (`"query"` field in JSON, `[pattern]` prefix in text). This is
@@ -47,7 +39,7 @@ the execution half of agent-side semantic search: the agent expands a
 concept into N lexical probes and pays one walk + one read per file for
 all of them.
 
-### 5. Zero-hit guidance — `--suggest`
+### 4. Zero-hit guidance — `--suggest`
 When a search finds nothing, derive variants automatically — the
 case-insensitive form, and the word fragments of a split identifier
 (`ConnectTimeout` → `connect`, `timeout`) — probe each, and report which
@@ -59,7 +51,7 @@ text always states an outcome, including "no derivable variants" and
 (variants are merged and deduplicated); stdin has no corpus to probe, so
 `--suggest` warns and is ignored there.
 
-### 6. Verifiable regions — `--get-region PATH@START-END` + JSON spans
+### 5. Verifiable regions — `--get-region PATH@START-END` + JSON spans
 JSON matches now carry `"span": [start, end)` (absolute byte range of the
 line) and a `"region"` id (`path@start-end`). `--get-region` fetches the
 exact bytes for a region id — an agent can cite a span in an answer and
@@ -68,43 +60,50 @@ self-contained: no index required.
 
 ## Phase 2 (implemented) — precision, scoping, honesty
 
-### 7. Identifier matching — `--ident`
+### 6. Identifier matching — `--ident`
 The pattern is an identifier name; matches every case convention
 (camelCase, PascalCase, snake_case, kebab-case, SCREAMING_SNAKE, flat),
 word-bounded — `Match` does not hit `MatchSet`. A rewrite to
 `(?i)\bconnect[_-]?timeout\b` routed through the normal engine factory.
 The proactive twin of `--suggest`.
 
-### 8. Enclosing scope — `--scope`
-`--sections` generalized to code: a bounded backward sticky-scope scan
-returns the enclosing definition line (per-language predicates chosen by
-extension; Markdown falls back to headings). JSON `"scope"` field, text
-`§` group lines.
+### 7. Enclosing scope — `--scope`
+Every match is annotated with its enclosing context: a bounded backward
+sticky-scope scan returns the enclosing definition line (per-language
+predicates chosen by extension; Markdown falls back to the nearest
+preceding heading, bounded to 64KB backward — the section it lives in,
+which is the context prose/book corpora actually need). JSON `"scope"`
+field, text `§` group lines. (An earlier release shipped this as two
+flags, `--sections` for Markdown headings and `--scope` for code; since
+`--scope` already auto-detected Markdown and produced identical output,
+`--sections` was folded in and removed rather than kept as a redundant,
+less-safe alias — unlike `--scope`, it never checked file type, so
+pointed at code it could misread a `#`-comment line as a heading.)
 
-### 9. Value enumeration — `--histogram`
+### 8. Value enumeration — `--histogram`
 Distinct matched texts with occurrence/file counts, most frequent first
 (`sort | uniq -c` built in). Composes with `-o` pipelines; `--top K`.
 
-### 10. Corpus scoping — `--changed-since REF`, `--files-from`, file conditions
+### 9. Corpus scoping — `--changed-since REF`, `--files-from`, file conditions
 `--changed-since` restricts any mode to the git diff surface (plus
 untracked); `--files-from -` feeds one query's `-l` output into the
 next; `--with-file`/`--without-file` express "files matching A but
 also/never B" as a Matcher wrapper (suppressed counts reported). All
 flow through one fileSource helper.
 
-### 11. Citation ergonomics — line regions + `--expand`
+### 10. Citation ergonomics — line regions + `--expand`
 `--get-region` accepts `path@:120-160` line form; `--expand N` widens
 any region by whole lines. The cite loop also serves "show me the
 neighborhood".
 
-### 12. Output honesty — error objects, `--collapse`, `--rank density`
+### 11. Output honesty — error objects, `--collapse`, `--rank density`
 Unreadable files emit `{"type":"error"}` in-stream and every summary
 counts `"errors"` (the recursive path previously dropped them
 silently). `--collapse` suppresses repeats of an identical line past 3,
 reporting exactly what was hidden. `--outline --rank density` orders by
 matches/KB and demotes vendored/generated files.
 
-### 13. Multiline — `-U`
+### 12. Multiline — `-U`
 Patterns match across lines (RE2 whole-buffer; extraction spans the
 block, `(?m)` anchors per line). Spans/regions cover the block, so
 multiline citations verify like any other. Unsupported combos (`-P`,
@@ -119,7 +118,7 @@ tree-sitter/AST path (per-language grammar treadmill, violates pure-Go,
 duplicates agents' LSP tools). Three features, sharing one small
 language-family table (`internal/lang`):
 
-### 14. Structural holes — `-S 'foo(:[args])'`
+### 13. Structural holes — `-S 'foo(:[args])'`
 The pattern is a template: literal text plus `:[name]` holes. A hole
 matches lazily across lines within balanced delimiters, skipping string
 and comment contents (per `--lang`, default `generic` = delimiters
@@ -128,14 +127,14 @@ answers "call sites of foo and what gets passed" — multi-line calls
 included — which previously took several regex round-trips. Matches are
 block-spanning (like `-U`) with working span/region citations.
 
-### 15. Capture bindings — `"captures"` + `--capture`
+### 14. Capture bindings — `"captures"` + `--capture`
 Every hole's text is captured and emitted in JSON
 (`"captures":{"args":"ctx, retry"}`), and `--histogram --capture args`
 aggregates a hole's values across the corpus: "histogram of the first
 argument to NewClient(...)" is one command returning tens of tokens
 instead of hundreds of match lines to tabulate by hand.
 
-### 16. Whole-block output — `--block`
+### 15. Whole-block output — `--block`
 Each match is emitted as its whole enclosing definition block (backward
 scope scan to the definition line, forward balance/indent/heading scan
 to its end; Markdown blocks run heading→next heading). Replaces the

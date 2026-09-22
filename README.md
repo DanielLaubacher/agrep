@@ -115,7 +115,7 @@ printf 'exponential backoff\njitter\nretry storm\nthundering herd\n' > /tmp/prob
 agrep --batch /tmp/probes --json -rc ~/books.extract/
 
 # Read the strongest sections, with chapter headings, under budget
-agrep -rn --sections --max-tokens 3000 -i 'jitter' ~/books.extract/distributed/
+agrep -rn --scope --max-tokens 3000 -i 'jitter' ~/books.extract/distributed/
 
 # Quote with a page-anchored, verifiable citation
 agrep --json -rn 'full jitter' ~/books.extract/aws-papers.md

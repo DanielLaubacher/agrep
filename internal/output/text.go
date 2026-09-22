@@ -18,11 +18,9 @@ type TextFormatter struct {
 	maxColumns  int
 	onlyMatch   bool // -o: output only matched text
 
-	// Sections prints a "§ <heading>" group line whenever the enclosing
-	// Markdown heading of the printed matches changes (--sections).
-	// Scope does the same with the enclosing definition line (--scope);
-	// when both are set, Scope wins (it covers Markdown via headings).
-	Sections    bool
+	// Scope prints a "§ <heading>" group line whenever the enclosing
+	// definition (func/class by language; heading in Markdown) of the
+	// printed matches changes (--scope).
 	Scope       bool
 	lastSection string
 	lastFile    string
@@ -81,7 +79,7 @@ func (f *TextFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 		}
 	} else {
 		for i := range ms.Matches {
-			if f.Scope || f.Sections {
+			if f.Scope {
 				buf = f.formatGroupLine(buf, result.FilePath, ms, i)
 			}
 			buf = f.formatMatch(buf, result.FilePath, result.Query, ms, i, multiFile)
@@ -91,18 +89,13 @@ func (f *TextFormatter) Format(buf []byte, result Result, multiFile bool) []byte
 }
 
 // formatGroupLine emits a "§ <annotation>" group line when the enclosing
-// scope/section of the match differs from the previously printed one.
+// scope of the match differs from the previously printed one.
 func (f *TextFormatter) formatGroupLine(buf []byte, filePath string, ms *matcher.MatchSet, idx int) []byte {
 	m := &ms.Matches[idx]
 	if m.LineStart < 0 || m.IsContext {
 		return buf
 	}
-	var h []byte
-	if f.Scope {
-		h = enclosingScope(ms.Data, m.LineStart, filePath)
-	} else {
-		h = sectionHeading(ms.Data, m.LineStart)
-	}
+	h := enclosingScope(ms.Data, m.LineStart, filePath)
 	sec := string(h)
 	if h == nil {
 		// No heading or definition applies (common in PDF-extracted

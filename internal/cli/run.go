@@ -28,7 +28,7 @@ import (
 // itself, so auto-detection/warning below only applies when --lang was
 // never given at all). Without one, a single recognizable file
 // extension among the search paths is used automatically, matching how
-// --block/--scope/--sections already auto-detect per file. Anything
+// --block/--scope already auto-detect per file. Anything
 // less certain (a directory, files of different families, or no
 // recognizable extension) falls back to Generic — but says so: Generic
 // only knows balanced delimiters, and can silently misparse ordinary
@@ -235,14 +235,12 @@ func Run(cfg Config) int {
 		if cfg.MaxColumns > 0 {
 			jf.MaxColumns = cfg.MaxColumns
 		}
-		jf.Sections = cfg.Sections
 		jf.Scope = cfg.Scope
 		jf.CountOnly = cfg.CountOnly
 		jf.FilesOnly = cfg.FileNamesOnly
 		formatter = jf
 	} else {
 		tf := output.NewTextFormatter(cfg.LineNumbers, cfg.CountOnly, cfg.FileNamesOnly, useColor, maxCols, onlyMatch)
-		tf.Sections = cfg.Sections
 		tf.Scope = cfg.Scope
 		formatter = tf
 	}

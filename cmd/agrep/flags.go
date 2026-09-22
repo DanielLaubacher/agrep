@@ -87,7 +87,6 @@ Agent options (see agent-mode.md):
                            or defs (definition lines first; demotes tests)
       --collapse           Suppress repeats of identical match lines after 3
                            occurrences; reports exactly what was collapsed
-      --sections           Annotate matches with their Markdown section heading
       --scope              Annotate matches with their enclosing definition
                            (func/class/def by language; headings in Markdown)
       --batch FILE         Run all patterns in FILE (one per line) in one pass
@@ -366,8 +365,6 @@ func parseArgs(args []string) (cli.Config, profileFlags) {
 				die("flag %s requires a value", key)
 			}
 			cfg.TopK = atoi(v, key)
-		case "--sections":
-			cfg.Sections = true
 		case "--collapse":
 			cfg.Collapse = true
 		case "--scope":
